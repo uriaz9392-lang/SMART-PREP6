@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <rect width="200" height="200" fill="#1C2B3A"/>
+  <circle cx="100" cy="100" r="55" fill="none" stroke="#EFEEE4" stroke-width="6"/>
+  <text x="100" y="112" font-family="Georgia, serif" font-size="46" font-weight="700" fill="#EFEEE4" text-anchor="middle">MP</text>
+</svg>

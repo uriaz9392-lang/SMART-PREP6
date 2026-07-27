@@ -1,0 +1,12 @@
+{
+  "name": "MDCAT Prep",
+  "short_name": "MDCAT Prep",
+  "description": "Practice MCQs and past papers for MDCAT",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EFEEE4",
+  "theme_color": "#1C2B3A",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
