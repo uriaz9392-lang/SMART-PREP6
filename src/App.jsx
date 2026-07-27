@@ -67,6 +67,42 @@ function subjectIcon(name) {
 
 const DEFAULT_PASSCODE = "mdcat2026";
 
+// ---------- Fixed folder structures ----------
+// MDCAT: Subject -> fixed list of topics (folders always visible, even with 0 MCQs)
+const MDCAT_TOPICS = {
+  Biology: [
+    "Acellular Life", "Bioenergetics", "Biological Molecules", "Cell Structure & Function",
+    "Coordination & Control (Nervous & Chemical Coordination)", "Enzymes", "Evolution", "Reproduction",
+    "Support & Movement", "Inheritance", "Circulation", "Immunity", "Respiration", "Digestion",
+    "Homeostasis", "Biotechnology",
+  ],
+  Chemistry: [
+    "Introduction & Fundamental Concepts of Chemistry", "Atomic Structure", "Gases", "Liquids", "Solids",
+    "Chemical Equilibrium", "Reaction Kinetics", "Thermochemistry & Energetics of Chemical Reactions",
+    "Electrochemistry", "Chemical Bonding", "S- and P-Block Elements", "Transition Elements",
+    "Fundamental Principles of Organic Chemistry", "Chemistry of Hydrocarbons", "Alkyl Halides",
+    "Alcohols and Phenols", "Aldehydes and Ketones", "Carboxylic Acids", "Macromolecules", "Industrial Chemistry",
+  ],
+  Physics: [
+    "Vectors and Equilibrium", "Force and Motion", "Work and Energy", "Rotational and Circular Motion",
+    "Fluid Dynamics", "Waves", "Thermodynamics", "Electrostatics", "Current Electricity",
+    "Electromagnetism", "Electromagnetic Induction", "Alternating Current", "Electronics",
+    "Dawn of Modern Physics", "Atomic Spectra", "Nuclear Physics",
+  ],
+  English: [
+    "Reading and Thinking Skills", "Formal and Lexical Aspects of Language", "Writing Skills",
+  ],
+};
+
+// MBBS: Year -> Block -> fixed list of subjects
+const MBBS_STRUCTURE = {
+  "2nd Year": {
+    "Block D": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+    "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+    "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+  },
+};
+
 const SEED_MCQS = [
   { id: "s1", program: "MDCAT", subject: "Biology", topic: "Cell Biology", source: "Practice",
     question: "Which organelle is primarily responsible for ATP synthesis in eukaryotic cells?",
@@ -473,16 +509,34 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry }) {
   );
 }
 
-// ---------- Program page: choose Subject ----------
-function ProgramPage({ program, bank, onBack, onOpenSubject }) {
+// ---------- Program page: choose Subject (or Year for MBBS) ----------
+function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
   const progQuestions = bank.filter((q) => q.program === program);
-  const subjects = useMemo(() => {
+  const isMBBS = program === "MBBS";
+  const isMDCAT = program === "MDCAT";
+
+  const groups = useMemo(() => {
+    if (isMBBS) {
+      // Fixed list of years
+      return Object.keys(MBBS_STRUCTURE).map((name) => ({
+        name,
+        count: progQuestions.filter((q) => (q.year || "") === name).length,
+      }));
+    }
+    if (isMDCAT) {
+      // Fixed list of subjects
+      return Object.keys(MDCAT_TOPICS).map((name) => ({
+        name,
+        count: progQuestions.filter((q) => q.subject === name).length,
+      }));
+    }
+    // Other programs (e.g. BSN): derive subjects from whatever has been added
     const map = {};
     progQuestions.forEach((q) => {
       map[q.subject] = (map[q.subject] || 0) + 1;
     });
     return Object.keys(map).sort().map((name) => ({ name, count: map[name] }));
-  }, [progQuestions]);
+  }, [progQuestions, isMBBS, isMDCAT]);
 
   const progInfo = PROGRAMS.find((p) => p.key === program);
 
@@ -497,12 +551,135 @@ function ProgramPage({ program, bank, onBack, onOpenSubject }) {
           {progInfo ? progInfo.label : program}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {progQuestions.length} question{progQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
+          {progQuestions.length} question{progQuestions.length === 1 ? "" : "s"} across {groups.length} {isMBBS ? "year" : "subject"}{groups.length === 1 ? "" : "s"}
+        </p>
+
+        {groups.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No questions yet for this program.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {groups.map((s) => {
+              const Icon = isMBBS ? GraduationCap : subjectIcon(s.name);
+              return (
+                <button
+                  key={s.name}
+                  onClick={() => (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                  >
+                    <Icon size={22} style={{ color: T.ink }} />
+                  </div>
+                  <div>
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                      {s.name}
+                    </span>
+                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                      {s.count} question{s.count === 1 ? "" : "s"} available
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- MBBS Year page (lists Blocks within a chosen year) ----------
+function YearPage({ program, year, bank, onBack, onOpenBlock }) {
+  const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
+  const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
+  const blocks = blockNames.map((name) => ({
+    name,
+    count: yearQuestions.filter((q) => (q.block || "") === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to years
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {year}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {yearQuestions.length} question{yearQuestions.length === 1 ? "" : "s"} across {blocks.length} block{blocks.length === 1 ? "" : "s"}
+        </p>
+
+        {blocks.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No blocks defined for this year.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {blocks.map((b) => (
+              <button
+                key={b.name}
+                onClick={() => onOpenBlock(b.name)}
+                className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+              >
+                <div
+                  className="flex items-center justify-center shrink-0"
+                  style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                >
+                  <Library size={22} style={{ color: T.ink }} />
+                </div>
+                <div>
+                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                    {b.name}
+                  </span>
+                  <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                    {b.count} question{b.count === 1 ? "" : "s"} available
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
+function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
+  const blockQuestions = bank.filter(
+    (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
+  );
+  const subjectNames = (MBBS_STRUCTURE[year] && MBBS_STRUCTURE[year][block]) || [];
+  const subjects = subjectNames.map((name) => ({
+    name,
+    count: blockQuestions.filter((q) => q.subject === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to blocks
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {year} · {block}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {blockQuestions.length} question{blockQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
         </p>
 
         {subjects.length === 0 ? (
           <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            No questions yet for this program.
+            No subjects defined for this block.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -539,9 +716,65 @@ function ProgramPage({ program, bank, onBack, onOpenSubject }) {
   );
 }
 
-// ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, subject, bank, onBack, onStart }) {
+// ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
+function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
+  const topicNames = MDCAT_TOPICS[subject] || [];
+  const topics = topicNames.map((name) => ({
+    name,
+    count: subjQuestions.filter((q) => q.topic === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to subjects
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {subject}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {subjQuestions.length} question{subjQuestions.length === 1 ? "" : "s"} across {topics.length} topic{topics.length === 1 ? "" : "s"}
+        </p>
+
+        {topics.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No topics defined for this subject.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {topics.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => onOpenTopic(t.name)}
+                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
+                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+              >
+                <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
+                <span className="text-xs shrink-0" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                  {t.count} q
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Subject setup (choose source + count) ----------
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart }) {
+  const subjQuestions = bank.filter(
+    (q) =>
+      q.program === program &&
+      q.subject === subject &&
+      (year ? (q.year || "") === year : true) &&
+      (block ? (q.block || "") === block : true) &&
+      (topic ? q.topic === topic : true)
+  );
   const sources = useMemo(() => {
     const set = new Set(subjQuestions.map((q) => q.source));
     return ["All", ...Array.from(set).sort()];
@@ -787,7 +1020,7 @@ function Results({ result, subject, onRetry, onHome }) {
 }
 
 // ---------- Admin ----------
-const EMPTY_FORM = { program: "MDCAT", subject: "", topic: "", source: "Practice", question: "", options: ["", "", "", ""], correct: 0, explanation: "" };
+const EMPTY_FORM = { program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Practice", question: "", options: ["", "", "", ""], correct: 0, explanation: "" };
 
 function AdminGate({ onUnlock, onBack }) {
   const [pass, setPass] = useState("");
@@ -860,9 +1093,20 @@ function AdminPanel({ bank, setBank, onExit }) {
   };
 
   const submit = async () => {
-    if (!form.question.trim() || form.options.some((o) => !o.trim()) || !form.topic.trim() || !form.subject.trim()) {
-      alert("Please fill in the subject, topic, question, and all four options.");
+    if (!form.question.trim() || form.options.some((o) => !o.trim())) {
+      alert("Please fill in the question and all four options.");
       return;
+    }
+    if (form.program === "MBBS") {
+      if (!form.year.trim() || !form.block.trim() || !form.subject.trim()) {
+        alert("Please select Year, Block, and Subject for MBBS.");
+        return;
+      }
+    } else {
+      if (!form.subject.trim() || !form.topic.trim()) {
+        alert("Please fill in the subject and topic.");
+        return;
+      }
     }
     let next;
     if (editingId) {
@@ -953,7 +1197,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
-                      {q.program} · {q.subject} · {q.topic} · {q.source}
+                      {q.program} · {q.year ? `${q.year} · ` : ""}{q.block ? `${q.block} · ` : ""}{q.subject} · {q.topic ? `${q.topic} · ` : ""}{q.source}
                     </div>
                     <div style={{ fontFamily: "'Source Serif 4', serif" }}>{q.question}</div>
                   </div>
@@ -977,25 +1221,107 @@ function AdminPanel({ bank, setBank, onExit }) {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Program</label>
-                <select value={form.program} onChange={(e) => setForm({ ...form, program: e.target.value })} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+                <select
+                  value={form.program}
+                  onChange={(e) => setForm({ ...form, program: e.target.value, year: "", block: "", subject: "", topic: "" })}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
-              </div>
-              <div>
-                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Biology" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Cell Biology" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source</label>
                 <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
               </div>
             </div>
+
+            {form.program === "MDCAT" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={form.subject}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value, topic: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select subject…</option>
+                    {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <select
+                    value={form.topic}
+                    onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                    disabled={!form.subject}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
+                    {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {form.program === "MBBS" && (
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
+                  <select
+                    value={form.year}
+                    onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select year…</option>
+                    {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
+                  <select
+                    value={form.block}
+                    onChange={(e) => setForm({ ...form, block: e.target.value, subject: "" })}
+                    disabled={!form.year}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.year ? "Select block…" : "Choose year first"}</option>
+                    {Object.keys(MBBS_STRUCTURE[form.year] || {}).map((b) => <option key={b}>{b}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={form.subject}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                    disabled={!form.block}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
+                    {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {form.program !== "MDCAT" && form.program !== "MBBS" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                </div>
+              </div>
+            )}
+
             <div className="mb-4">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Question</label>
               <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
@@ -1065,6 +1391,9 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [view, setView] = useState("home");
   const [program, setProgram] = useState(null);
+  const [year, setYear] = useState(null);
+  const [block, setBlock] = useState(null);
+  const [topic, setTopic] = useState(null);
   const [subject, setSubject] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
@@ -1084,8 +1413,19 @@ export default function App() {
     })();
   }, []);
 
-  const openProgram = (p) => { setProgram(p); setView("program"); };
-  const openSubject = (s) => { setSubject(s); setView("subject"); };
+  const openProgram = (p) => { setProgram(p); setYear(null); setBlock(null); setTopic(null); setView("program"); };
+  const openYear = (y) => { setYear(y); setBlock(null); setView("year"); };
+  const openBlock = (b) => { setBlock(b); setView("block"); };
+  const openSubject = (s) => {
+    setSubject(s);
+    if (program === "MDCAT") {
+      setTopic(null);
+      setView("topic");
+    } else {
+      setView("subject");
+    }
+  };
+  const openTopic = (t) => { setTopic(t); setView("subject"); };
   const startQuiz = (qs) => { setQuizQuestions(qs); setView("quiz"); };
 
   const finishQuiz = async (res) => {
@@ -1095,9 +1435,10 @@ export default function App() {
       totalCorrect: (stats?.totalCorrect || 0) + res.correct,
       bySubject: { ...(stats?.bySubject || {}) },
     };
-    next.bySubject[subject] = {
-      attempted: (next.bySubject[subject]?.attempted || 0) + res.questions.length,
-      correct: (next.bySubject[subject]?.correct || 0) + res.correct,
+    const statsKey = block ? `${year} | ${block} | ${subject}` : year ? `${year} - ${subject}` : topic ? `${subject} - ${topic}` : subject;
+    next.bySubject[statsKey] = {
+      attempted: (next.bySubject[statsKey]?.attempted || 0) + res.questions.length,
+      correct: (next.bySubject[statsKey]?.correct || 0) + res.correct,
     };
     setStats(next);
     await saveStats(next);
@@ -1129,6 +1470,41 @@ export default function App() {
         bank={bank}
         onBack={() => setView("home")}
         onOpenSubject={openSubject}
+        onOpenYear={openYear}
+      />
+    );
+  }
+  if (view === "year") {
+    return (
+      <YearPage
+        program={program}
+        year={year}
+        bank={bank}
+        onBack={() => setView("program")}
+        onOpenBlock={openBlock}
+      />
+    );
+  }
+  if (view === "block") {
+    return (
+      <BlockPage
+        program={program}
+        year={year}
+        block={block}
+        bank={bank}
+        onBack={() => setView("year")}
+        onOpenSubject={openSubject}
+      />
+    );
+  }
+  if (view === "topic") {
+    return (
+      <TopicPage
+        program={program}
+        subject={subject}
+        bank={bank}
+        onBack={() => setView("program")}
+        onOpenTopic={openTopic}
       />
     );
   }
@@ -1136,9 +1512,12 @@ export default function App() {
     return (
       <SubjectSetup
         program={program}
+        year={program === "MBBS" ? year : null}
+        block={program === "MBBS" ? block : null}
+        topic={program === "MDCAT" ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView("program")}
+        onBack={() => setView(program === "MBBS" ? "block" : program === "MDCAT" ? "topic" : "program")}
         onStart={startQuiz}
       />
     );
