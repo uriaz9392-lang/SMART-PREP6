@@ -183,8 +183,8 @@ let _pdfjsLibPromise = null;
 async function getPdfJs() {
   if (!_pdfjsLibPromise) {
     _pdfjsLibPromise = (async () => {
-      const lib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.mjs");
-      lib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs";
+      const lib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs");
+      lib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs";
       return lib;
     })();
   }
@@ -427,7 +427,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry }) {
               </button>
             </div>
           </div>
-          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>Good Morning, Future Doctor 👋</div>
+          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>Good Morning, Future Doctor ðŸ‘‹</div>
           <h1 className="text-3xl sm:text-4xl mb-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#fff" }}>
             Focus Today, <span style={{ color: "#6FA3F5" }}>Heal Tomorrow.</span>
           </h1>
@@ -540,7 +540,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry }) {
             <div className="h-1.5" style={{ width: `${accuracy}%`, background: "#6FA3F5", borderRadius: 4 }} />
           </div>
           <div className="text-xs" style={{ color: "#B9C4DE" }}>
-            {attempted === 0 ? "Start practicing to see your progress here." : "Keep it up! You're doing great. ⭐"}
+            {attempted === 0 ? "Start practicing to see your progress here." : "Keep it up! You're doing great. â­"}
           </div>
         </div>
 
@@ -718,7 +718,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
           <ArrowLeft size={16} /> Back to blocks
         </button>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
-          {year} · {block}
+          {year} Â· {block}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
           {blockQuestions.length} question{blockQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
@@ -894,7 +894,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
           className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
           style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
         >
-          Begin practice →
+          Begin practice â†’
         </button>
       </div>
     </div>
@@ -927,7 +927,7 @@ function Quiz({ questions, subject, onFinish, onExit }) {
             <ArrowLeft size={16} /> Exit
           </button>
           <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-sm" >
-            {subject} · Q{idx + 1} / {questions.length}
+            {subject} Â· Q{idx + 1} / {questions.length}
           </div>
         </div>
 
@@ -939,7 +939,7 @@ function Quiz({ questions, subject, onFinish, onExit }) {
           className="text-xs tracking-widest uppercase mb-3"
           style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}
         >
-          {q.topic} · {q.source}
+          {q.topic} Â· {q.source}
         </div>
         <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-2xl mb-8 leading-snug">
           {q.question}
@@ -1003,7 +1003,7 @@ function Results({ result, subject, onRetry, onHome }) {
       <div className="max-w-2xl mx-auto px-6 py-10">
         <div className="text-center mb-10">
           <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
-            {subject} — Result
+            {subject} â€” Result
           </div>
           <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-6xl">
             {pct}%
@@ -1095,7 +1095,7 @@ function AdminGate({ onUnlock, onBack }) {
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin sign-in</h1>
         </div>
         <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-          Default passcode is <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{DEFAULT_PASSCODE}</code> — change it after signing in.
+          Default passcode is <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{DEFAULT_PASSCODE}</code> â€” change it after signing in.
         </p>
         <input
           type="password"
@@ -1150,9 +1150,9 @@ function AdminPanel({ bank, setBank, onExit }) {
     setBulkResults([]);
     try {
       setBulkStatus("extracting");
-      setBulkProgressText("Reading PDF…");
+      setBulkProgressText("Reading PDFâ€¦");
       const fullText = await extractPdfText(bulkFile, (page, total) => {
-        setBulkProgressText(`Reading PDF — page ${page} of ${total}…`);
+        setBulkProgressText(`Reading PDF â€” page ${page} of ${total}â€¦`);
       });
       if (!fullText.trim()) {
         setBulkError("Could not find any text in this PDF (it may be a scanned image). Try a text-based PDF.");
@@ -1164,7 +1164,7 @@ function AdminPanel({ bank, setBank, onExit }) {
       const chunks = chunkText(fullText, 9000);
       let all = [];
       for (let i = 0; i < chunks.length; i++) {
-        setBulkProgressText(`Analyzing with AI — part ${i + 1} of ${chunks.length}…`);
+        setBulkProgressText(`Analyzing with AI â€” part ${i + 1} of ${chunks.length}â€¦`);
         const mcqs = await parseMcqsChunk(chunks[i]);
         all = all.concat(mcqs);
       }
@@ -1290,7 +1290,7 @@ function AdminPanel({ bank, setBank, onExit }) {
         <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ClipboardList size={20} />
-            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin — Question Bank</h1>
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin â€” Question Bank</h1>
           </div>
           <button onClick={onExit} className="flex items-center gap-1 text-sm px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
             <LogOut size={14} /> Exit admin
@@ -1354,7 +1354,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
-                      {q.program} · {q.year ? `${q.year} · ` : ""}{q.block ? `${q.block} · ` : ""}{q.subject} · {q.topic ? `${q.topic} · ` : ""}{q.source}
+                      {q.program} Â· {q.year ? `${q.year} Â· ` : ""}{q.block ? `${q.block} Â· ` : ""}{q.subject} Â· {q.topic ? `${q.topic} Â· ` : ""}{q.source}
                     </div>
                     <div style={{ fontFamily: "'Source Serif 4', serif" }}>{q.question}</div>
                   </div>
@@ -1403,7 +1403,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">Select subject…</option>
+                    <option value="">Select subjectâ€¦</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -1416,7 +1416,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
+                    <option value="">{form.subject ? "Select topicâ€¦" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
                   </select>
                 </div>
@@ -1433,7 +1433,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">Select year…</option>
+                    <option value="">Select yearâ€¦</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
                   </select>
                 </div>
@@ -1446,7 +1446,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{form.year ? "Select block…" : "Choose year first"}</option>
+                    <option value="">{form.year ? "Select blockâ€¦" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[form.year] || {}).map((b) => <option key={b}>{b}</option>)}
                   </select>
                 </div>
@@ -1459,7 +1459,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
+                    <option value="">{form.block ? "Select subjectâ€¦" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -1484,7 +1484,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
             </div>
             <div className="mb-4 space-y-2">
-              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Options — select the correct one</label>
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Options â€” select the correct one</label>
               {form.options.map((opt, i) => (
                 <div key={i} className="flex items-center gap-3">
                   <Bubble
@@ -1521,8 +1521,8 @@ function AdminPanel({ bank, setBank, onExit }) {
         {tab === "bulk" && (
           <div className="max-w-3xl">
             <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
-              Upload a PDF of MCQs (e.g. a past paper). The AI will read it, split out each question, and — if the
-              correct answer isn't marked in the file — figure it out itself. Review the results below before saving.
+              Upload a PDF of MCQs (e.g. a past paper). The AI will read it, split out each question, and â€” if the
+              correct answer isn't marked in the file â€” figure it out itself. Review the results below before saving.
             </p>
 
             <div className="grid grid-cols-2 gap-4 mb-4">
@@ -1553,7 +1553,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">Select subject…</option>
+                    <option value="">Select subjectâ€¦</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -1566,7 +1566,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
+                    <option value="">{bulkForm.subject ? "Select topicâ€¦" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
                   </select>
                 </div>
@@ -1583,7 +1583,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">Select year…</option>
+                    <option value="">Select yearâ€¦</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
                   </select>
                 </div>
@@ -1596,7 +1596,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{bulkForm.year ? "Select block…" : "Choose year first"}</option>
+                    <option value="">{bulkForm.year ? "Select blockâ€¦" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[bulkForm.year] || {}).map((b) => <option key={b}>{b}</option>)}
                   </select>
                 </div>
@@ -1609,7 +1609,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: "#fff" }}
                   >
-                    <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
+                    <option value="">{bulkForm.block ? "Select subjectâ€¦" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -1640,7 +1640,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               style={{ background: T.ink, color: T.paper, opacity: bulkStatus === "extracting" || bulkStatus === "analyzing" ? 0.6 : 1 }}
             >
               <Plus size={16} />
-              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Working…" : "Extract & Analyze with AI"}
+              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Workingâ€¦" : "Extract & Analyze with AI"}
             </button>
 
             {(bulkStatus === "extracting" || bulkStatus === "analyzing") && (
@@ -1659,7 +1659,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-sm" style={{ color: T.inkSoft }}>
-                    {bulkResults.length} question(s) found — {bulkResults.filter((m) => m.include).length} selected. Review, then save.
+                    {bulkResults.length} question(s) found â€” {bulkResults.filter((m) => m.include).length} selected. Review, then save.
                   </div>
                   <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
                     <Save size={16} /> Add selected to bank
@@ -1678,7 +1678,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                             className="text-xs px-2 py-0.5 shrink-0"
                             style={{ background: T.amberSoft, color: T.amber, fontFamily: "'IBM Plex Mono', monospace" }}
                           >
-                            AI guessed the answer — please verify
+                            AI guessed the answer â€” please verify
                           </span>
                         )}
                       </div>
@@ -1809,7 +1809,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
-        <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>Loading question bank…</div>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>Loading question bankâ€¦</div>
       </div>
     );
   }
