@@ -1,6 +1,6 @@
 {
-  "name": "MDCAT Prep",
-  "short_name": "MDCAT Prep",
+  "name": "Smart Prep",
+  "short_name": "Smart Prep",
   "description": "Practice MCQs and past papers for MDCAT",
   "start_url": "/",
   "display": "standalone",
