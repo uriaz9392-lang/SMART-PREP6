@@ -239,7 +239,7 @@ function ComingSoon({ title }) {
 }
 
 // ---------- Home: dashboard ----------
-function Home({ bank, onOpenProgram, onOpenAdmin, stats }) {
+function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry }) {
   const [navTab, setNavTab] = useState("home");
   const total = bank.length;
   const counts = useMemo(() => {
@@ -306,13 +306,15 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats }) {
             <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
           </div>
-          <button
-            onClick={onOpenAdmin}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
-            style={{ border: `1px solid ${T.ink}` }}
-          >
-            <Lock size={14} /> Admin sign-in
-          </button>
+          {showAdminEntry && (
+            <button
+              onClick={onOpenAdmin}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
+              style={{ border: `1px solid ${T.ink}` }}
+            >
+              <Lock size={14} /> Admin sign-in
+            </button>
+          )}
         </div>
         <BottomNav tab={navTab} setTab={setNavTab} />
       </div>
@@ -334,7 +336,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats }) {
                 <Bell size={20} color="#fff" />
               </button>
               <button
-                onClick={onOpenAdmin}
+                onClick={() => setNavTab("profile")}
                 className="flex items-center justify-center"
                 style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.15)" }}
               >
@@ -1066,6 +1068,7 @@ export default function App() {
   const [subject, setSubject] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
+  const isAdminURL = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("admin");
 
   useEffect(() => {
     (async () => {
@@ -1111,7 +1114,7 @@ export default function App() {
   }
 
   if (view === "home") {
-    return <Home bank={bank} onOpenProgram={openProgram} onOpenAdmin={() => setView("admin-gate")} stats={stats} />;
+    return <Home bank={bank} onOpenProgram={openProgram} onOpenAdmin={() => setView("admin-gate")} stats={stats} showAdminEntry={isAdminURL} />;
   }
   if (view === "admin-gate") {
     return <AdminGate onUnlock={() => setView("admin")} onBack={() => setView("home")} />;
