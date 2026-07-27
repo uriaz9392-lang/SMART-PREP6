@@ -178,6 +178,53 @@ async function saveStats(stats) {
   saveLocalStats(stats);
 }
 
+// ---------- Bulk PDF -> AI MCQ extraction helpers ----------
+let _pdfjsLibPromise = null;
+async function getPdfJs() {
+  if (!_pdfjsLibPromise) {
+    _pdfjsLibPromise = (async () => {
+      const lib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.mjs");
+      lib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs";
+      return lib;
+    })();
+  }
+  return _pdfjsLibPromise;
+}
+
+async function extractPdfText(file, onProgress) {
+  const pdfjsLib = await getPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((it) => it.str).join(" ") + "\n";
+    if (onProgress) onProgress(i, pdf.numPages);
+  }
+  return text;
+}
+
+// Splits text into chunks (by character count) so each AI call stays a manageable size.
+function chunkText(text, chunkSize = 9000) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+async function parseMcqsChunk(textChunk) {
+  const res = await fetch("/api/parse-mcqs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: textChunk }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "AI parsing failed.");
+  return data.mcqs || [];
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -1077,6 +1124,115 @@ function AdminPanel({ bank, setBank, onExit }) {
   const [newPass, setNewPass] = useState("");
   const [passMsg, setPassMsg] = useState("");
 
+  // ---- Bulk PDF upload state ----
+  const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkStatus, setBulkStatus] = useState("idle"); // idle | extracting | analyzing | done | error
+  const [bulkProgressText, setBulkProgressText] = useState("");
+  const [bulkError, setBulkError] = useState("");
+  const [bulkResults, setBulkResults] = useState([]); // [{...mcq, include: true}]
+
+  const bulkClassificationReady =
+    bulkForm.program === "MBBS"
+      ? !!(bulkForm.year && bulkForm.block && bulkForm.subject)
+      : !!(bulkForm.subject && (bulkForm.program === "MDCAT" ? bulkForm.topic : true));
+
+  const runBulkExtract = async () => {
+    if (!bulkFile) {
+      setBulkError("Please choose a PDF file first.");
+      return;
+    }
+    if (!bulkClassificationReady) {
+      setBulkError("Please choose the Subject/Topic (or Year/Block/Subject for MBBS) before uploading.");
+      return;
+    }
+    setBulkError("");
+    setBulkResults([]);
+    try {
+      setBulkStatus("extracting");
+      setBulkProgressText("Reading PDF…");
+      const fullText = await extractPdfText(bulkFile, (page, total) => {
+        setBulkProgressText(`Reading PDF — page ${page} of ${total}…`);
+      });
+      if (!fullText.trim()) {
+        setBulkError("Could not find any text in this PDF (it may be a scanned image). Try a text-based PDF.");
+        setBulkStatus("error");
+        return;
+      }
+
+      setBulkStatus("analyzing");
+      const chunks = chunkText(fullText, 9000);
+      let all = [];
+      for (let i = 0; i < chunks.length; i++) {
+        setBulkProgressText(`Analyzing with AI — part ${i + 1} of ${chunks.length}…`);
+        const mcqs = await parseMcqsChunk(chunks[i]);
+        all = all.concat(mcqs);
+      }
+
+      const cleaned = all
+        .filter((m) => m && m.question && Array.isArray(m.options) && m.options.length === 4)
+        .map((m) => ({
+          question: String(m.question).trim(),
+          options: m.options.map((o) => String(o).trim()),
+          correct: Number.isInteger(m.correct) && m.correct >= 0 && m.correct <= 3 ? m.correct : 0,
+          explanation: m.explanation ? String(m.explanation).trim() : "",
+          answer_source: m.answer_source === "text" ? "text" : "ai",
+          include: true,
+        }));
+
+      if (cleaned.length === 0) {
+        setBulkError("No MCQs could be extracted from this PDF. Please check the file and try again.");
+        setBulkStatus("error");
+        return;
+      }
+
+      setBulkResults(cleaned);
+      setBulkStatus("done");
+      setBulkProgressText("");
+    } catch (e) {
+      setBulkError(String(e?.message || e));
+      setBulkStatus("error");
+    }
+  };
+
+  const toggleBulkInclude = (idx) => {
+    setBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, include: !m.include } : m)));
+  };
+
+  const updateBulkResult = (idx, patch) => {
+    setBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  };
+
+  const saveBulkResults = async () => {
+    const toAdd = bulkResults
+      .filter((m) => m.include)
+      .map((m) => ({
+        id: uid(),
+        program: bulkForm.program,
+        year: bulkForm.program === "MBBS" ? bulkForm.year : "",
+        block: bulkForm.program === "MBBS" ? bulkForm.block : "",
+        subject: bulkForm.subject,
+        topic: bulkForm.program === "MDCAT" ? bulkForm.topic : "",
+        source: bulkForm.source,
+        question: m.question,
+        options: m.options,
+        correct: m.correct,
+        explanation: m.explanation,
+      }));
+    if (toAdd.length === 0) {
+      setBulkError("No questions selected to add.");
+      return;
+    }
+    const next = [...bank, ...toAdd];
+    setBank(next);
+    await saveBank(next);
+    setBulkResults([]);
+    setBulkStatus("idle");
+    setBulkFile(null);
+    alert(`${toAdd.length} question(s) added to the bank.`);
+    setTab("list");
+  };
+
   const filtered = bank.filter((q) => {
     if (filterProgram !== "All" && q.program !== filterProgram) return false;
     if (search && !q.question.toLowerCase().includes(search.toLowerCase()) && !q.topic.toLowerCase().includes(search.toLowerCase()) && !q.subject.toLowerCase().includes(search.toLowerCase())) return false;
@@ -1144,6 +1300,7 @@ function AdminPanel({ bank, setBank, onExit }) {
           {[
             { k: "list", label: "All questions" },
             { k: "form", label: editingId ? "Edit question" : "Add question" },
+            { k: "bulk", label: "Bulk Upload (PDF)" },
             { k: "settings", label: "Settings" },
           ].map((t) => (
             <button
@@ -1358,6 +1515,209 @@ function AdminPanel({ bank, setBank, onExit }) {
               </button>
               <button onClick={() => setTab("list")} className="px-5 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>Cancel</button>
             </div>
+          </div>
+        )}
+
+        {tab === "bulk" && (
+          <div className="max-w-3xl">
+            <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
+              Upload a PDF of MCQs (e.g. a past paper). The AI will read it, split out each question, and — if the
+              correct answer isn't marked in the file — figure it out itself. Review the results below before saving.
+            </p>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Program</label>
+                <select
+                  value={bulkForm.program}
+                  onChange={(e) => setBulkForm({ program: e.target.value, year: "", block: "", subject: "", topic: "", source: bulkForm.source })}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                >
+                  {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source label</label>
+                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              </div>
+            </div>
+
+            {bulkForm.program === "MDCAT" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={bulkForm.subject}
+                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value, topic: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select subject…</option>
+                    {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <select
+                    value={bulkForm.topic}
+                    onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
+                    disabled={!bulkForm.subject}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
+                    {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {bulkForm.program === "MBBS" && (
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
+                  <select
+                    value={bulkForm.year}
+                    onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select year…</option>
+                    {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
+                  <select
+                    value={bulkForm.block}
+                    onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "" })}
+                    disabled={!bulkForm.year}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.year ? "Select block…" : "Choose year first"}</option>
+                    {Object.keys(MBBS_STRUCTURE[bulkForm.year] || {}).map((b) => <option key={b}>{b}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={bulkForm.subject}
+                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })}
+                    disabled={!bulkForm.block}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
+                    {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {bulkForm.program !== "MDCAT" && bulkForm.program !== "MBBS" && (
+              <div className="mb-4">
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>PDF file</label>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                className="w-full text-sm"
+              />
+            </div>
+
+            <button
+              onClick={runBulkExtract}
+              disabled={bulkStatus === "extracting" || bulkStatus === "analyzing"}
+              className="flex items-center gap-2 px-5 py-2 text-sm mb-4"
+              style={{ background: T.ink, color: T.paper, opacity: bulkStatus === "extracting" || bulkStatus === "analyzing" ? 0.6 : 1 }}
+            >
+              <Plus size={16} />
+              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Working…" : "Extract & Analyze with AI"}
+            </button>
+
+            {(bulkStatus === "extracting" || bulkStatus === "analyzing") && (
+              <div className="text-sm mb-4" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                {bulkProgressText}
+              </div>
+            )}
+
+            {bulkError && (
+              <div className="p-3 text-sm mb-4" style={{ border: `1px solid ${T.rose}`, color: T.rose, background: T.roseSoft }}>
+                {bulkError}
+              </div>
+            )}
+
+            {bulkResults.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-sm" style={{ color: T.inkSoft }}>
+                    {bulkResults.length} question(s) found — {bulkResults.filter((m) => m.include).length} selected. Review, then save.
+                  </div>
+                  <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                    <Save size={16} /> Add selected to bank
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {bulkResults.map((m, idx) => (
+                    <div key={idx} className="p-4" style={{ background: "#fff", border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <label className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={m.include} onChange={() => toggleBulkInclude(idx)} />
+                          Include
+                        </label>
+                        {m.answer_source === "ai" && (
+                          <span
+                            className="text-xs px-2 py-0.5 shrink-0"
+                            style={{ background: T.amberSoft, color: T.amber, fontFamily: "'IBM Plex Mono', monospace" }}
+                          >
+                            AI guessed the answer — please verify
+                          </span>
+                        )}
+                      </div>
+                      <textarea
+                        value={m.question}
+                        onChange={(e) => updateBulkResult(idx, { question: e.target.value })}
+                        rows={2}
+                        className="w-full px-3 py-2 mb-2"
+                        style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'Source Serif 4', serif" }}
+                      />
+                      <div className="space-y-1">
+                        {m.options.map((opt, oi) => (
+                          <div key={oi} className="flex items-center gap-3">
+                            <Bubble
+                              letter={["A", "B", "C", "D"][oi]}
+                              state={m.correct === oi ? "correct" : "idle"}
+                              onClick={() => updateBulkResult(idx, { correct: oi })}
+                            />
+                            <input
+                              value={opt}
+                              onChange={(e) => {
+                                const opts = [...m.options];
+                                opts[oi] = e.target.value;
+                                updateBulkResult(idx, { options: opts });
+                              }}
+                              className="flex-1 px-3 py-1.5 text-sm"
+                              style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm mt-4" style={{ background: T.emerald, color: "#fff" }}>
+                  <Save size={16} /> Add selected to bank
+                </button>
+              </div>
+            )}
           </div>
         )}
 
