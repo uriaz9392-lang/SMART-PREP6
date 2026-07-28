@@ -49,3 +49,57 @@ export function saveLocalStats(stats) {
     localStorage.setItem("mdcat-my-stats", JSON.stringify(stats));
   } catch {}
 }
+
+// ---- Authentication ----
+export async function signUp(email, password) {
+  return supabase.auth.signUp({ email, password });
+}
+export async function signIn(email, password) {
+  return supabase.auth.signInWithPassword({ email, password });
+}
+export async function signOut() {
+  return supabase.auth.signOut();
+}
+export async function getSession() {
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+export function onAuthChange(callback) {
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  return data.subscription;
+}
+
+// ---- Per-user stats (each student's own score, tied to their account) ----
+export async function loadUserStats(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("user_stats")
+      .select("total_attempted, total_correct, by_subject")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return {
+      totalAttempted: data.total_attempted || 0,
+      totalCorrect: data.total_correct || 0,
+      bySubject: data.by_subject || {},
+    };
+  } catch (e) {
+    console.error("Load user stats failed:", e);
+    return null;
+  }
+}
+
+export async function saveUserStats(userId, stats) {
+  try {
+    const { error } = await supabase.from("user_stats").upsert({
+      user_id: userId,
+      total_attempted: stats.totalAttempted,
+      total_correct: stats.totalCorrect,
+      by_subject: stats.bySubject,
+    });
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save user stats failed:", e);
+  }
+}
