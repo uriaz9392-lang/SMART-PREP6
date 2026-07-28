@@ -14,11 +14,12 @@ import {
 
 // ---------- Design tokens ----------
 const T = {
-  paper: "#EFEEE4",
-  paperDark: "#E4E1D2",
-  ink: "#1C2B3A",
-  inkSoft: "#4A5A68",
-  line: "#CEC9B6",
+  paper: "#0B1E3D",
+  paperDark: "#0F2748",
+  card: "#12294D",
+  ink: "#EAF1FB",
+  inkSoft: "#93A9CC",
+  line: "#26406B",
   emerald: "#1F7A5C",
   emeraldSoft: "#DCEBE3",
   rose: "#B8493F",
@@ -354,7 +355,7 @@ function BottomNav({ tab, setTab }) {
   return (
     <div
       className="fixed bottom-0 left-0 right-0 flex items-center justify-around py-2 z-20"
-      style={{ background: "#fff", borderTop: `1px solid ${T.line}` }}
+      style={{ background: T.card, borderTop: `1px solid ${T.line}` }}
     >
       {items.map((it) => {
         const Icon = it.icon;
@@ -407,6 +408,15 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
   const attempted = stats?.totalAttempted || 0;
   const accuracy = attempted > 0 ? Math.round((stats.totalCorrect / attempted) * 100) : 0;
 
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    if (h < 5) return "Good Night";
+    if (h < 12) return "Good Morning";
+    if (h < 17) return "Good Afternoon";
+    if (h < 21) return "Good Evening";
+    return "Good Night";
+  }, []);
+
   const soon = (label) => alert(`${label} is coming soon.`);
 
   if (navTab === "library") return <><ComingSoon title="Library" /><BottomNav tab={navTab} setTab={setNavTab} /></>;
@@ -427,7 +437,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
                   disabled={n === 0}
                   onClick={() => onOpenProgram(p.key)}
                   className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <Icon size={22} />
                   <div>
@@ -450,15 +460,15 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
         <div className="max-w-md mx-auto px-6 py-10">
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Profile</h2>
           <p className="text-sm mb-6" style={{ color: T.inkSoft }}>{userEmail}</p>
-          <div className="p-5 mb-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
           </div>
-          <div className="p-5 mb-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
           </div>
-          <div className="p-5 mb-6" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
           </div>
@@ -507,7 +517,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
               </button>
             </div>
           </div>
-          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>Good Morning, Future Doctor 👋</div>
+          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>{greeting}, Future Doctor 👋</div>
           <h1 className="text-3xl sm:text-4xl mb-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#fff" }}>
             Focus Today, <span style={{ color: "#6FA3F5" }}>Heal Tomorrow.</span>
           </h1>
@@ -519,7 +529,10 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
 
       <main className="max-w-5xl mx-auto px-6 -mt-4">
         {/* Choose Your Program */}
-        <div className="flex items-center justify-between mb-4">
+        <div
+          className="flex items-center justify-between mb-4 px-4 py-3 relative z-10"
+          style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}
+        >
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg">
             Choose Your Program
           </h2>
@@ -586,8 +599,8 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
           ].map((q) => {
             const Icon = q.icon;
             return (
-              <button key={q.label} onClick={q.action} className="p-4 text-left flex flex-col gap-2" style={{ background: "#fff", border: `1px solid ${T.line}`, borderRadius: 10 }}>
-                <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: T.paperDark }}>
+              <button key={q.label} onClick={q.action} className="p-4 text-left flex flex-col gap-2" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}>
+                <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
                   <Icon size={16} />
                 </div>
                 <div className="text-sm font-medium">{q.label}</div>
@@ -691,7 +704,7 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
                   key={s.name}
                   onClick={() => (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))}
                   className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
                     className="flex items-center justify-center shrink-0"
@@ -751,7 +764,7 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
                 key={b.name}
                 onClick={() => onOpenBlock(b.name)}
                 className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
                 <div
                   className="flex items-center justify-center shrink-0"
@@ -814,7 +827,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
                   key={s.name}
                   onClick={() => onOpenSubject(s.name)}
                   className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
                     className="flex items-center justify-center shrink-0"
@@ -874,7 +887,7 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
                 key={t.name}
                 onClick={() => onOpenTopic(t.name)}
                 className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
-                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <div
@@ -1068,7 +1081,7 @@ function Quiz({ questions, subject, onFinish, onExit }) {
                 onClick={() => select(i)}
                 disabled={revealed}
                 className="w-full flex items-center gap-4 p-3 text-left disabled:cursor-default"
-                style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
               >
                 <Bubble letter={letters[i]} state={state} disabled={revealed} onClick={() => select(i)} />
                 <span>{opt}</span>
@@ -1162,7 +1175,7 @@ function Results({ result, subject, onRetry, onHome }) {
             const your = answers[i];
             const isCorrect = your === q.correct;
             return (
-              <div key={i} className="p-4" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+              <div key={i} className="p-4" style={{ border: `1px solid ${T.line}`, background: T.card }}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div style={{ fontFamily: "'Source Serif 4', serif" }} className="font-semibold">
                     {i + 1}. {q.question}
@@ -1400,7 +1413,7 @@ function AdminGate({ onUnlock, onBack }) {
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder="Passcode"
           className="w-full px-4 py-3 mb-2 outline-none"
-          style={{ border: `1px solid ${T.ink}`, background: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+          style={{ border: `1px solid ${T.ink}`, background: T.card, fontFamily: "'IBM Plex Mono', monospace" }}
         />
         {error && <div className="text-sm mb-3" style={{ color: T.rose }}>{error}</div>}
         <button onClick={submit} className="w-full py-3 text-sm mt-2" style={{ background: T.ink, color: T.paper }}>
@@ -1642,7 +1655,7 @@ function AdminPanel({ bank, setBank, onExit }) {
         {tab === "list" && (
           <div>
             <div className="flex flex-wrap items-center gap-3 mb-5">
-              <div className="flex items-center gap-2 px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+              <div className="flex items-center gap-2 px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }}>
                 <Search size={14} style={{ color: T.inkSoft }} />
                 <input
                   value={search}
@@ -1656,7 +1669,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 value={filterProgram}
                 onChange={(e) => setFilterProgram(e.target.value)}
                 className="px-3 py-2 text-sm"
-                style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
               >
                 <option>All</option>
                 {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
@@ -1670,7 +1683,7 @@ function AdminPanel({ bank, setBank, onExit }) {
 
             <div className="space-y-2">
               {filtered.map((q) => (
-                <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+                <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
                       {q.program} · {q.year ? `${q.year} · ` : ""}{q.block ? `${q.block} · ` : ""}{q.subject} · {q.topic ? `${q.topic} · ` : ""}{q.source}
@@ -1701,14 +1714,14 @@ function AdminPanel({ bank, setBank, onExit }) {
                   value={form.program}
                   onChange={(e) => setForm({ ...form, program: e.target.value, year: "", block: "", subject: "", topic: "" })}
                   className="w-full px-3 py-2"
-                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
                 >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source</label>
-                <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             </div>
 
@@ -1720,7 +1733,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={form.subject}
                     onChange={(e) => setForm({ ...form, subject: e.target.value, topic: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
@@ -1733,7 +1746,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, topic: e.target.value })}
                     disabled={!form.subject}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
@@ -1750,7 +1763,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={form.year}
                     onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select year…</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
@@ -1763,7 +1776,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, block: e.target.value, subject: "" })}
                     disabled={!form.year}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.year ? "Select block…" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[form.year] || {}).map((b) => <option key={b}>{b}</option>)}
@@ -1776,7 +1789,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, subject: e.target.value })}
                     disabled={!form.block}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
@@ -1789,18 +1802,18 @@ function AdminPanel({ bank, setBank, onExit }) {
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
                 </div>
               </div>
             )}
 
             <div className="mb-4">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Question</label>
-              <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
             </div>
             <div className="mb-4 space-y-2">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Options — select the correct one</label>
@@ -1819,14 +1832,14 @@ function AdminPanel({ bank, setBank, onExit }) {
                       setForm({ ...form, options: o });
                     }}
                     className="flex-1 px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   />
                 </div>
               ))}
             </div>
             <div className="mb-6">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation (optional)</label>
-              <textarea value={form.explanation} onChange={(e) => setForm({ ...form, explanation: e.target.value })} rows={2} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              <textarea value={form.explanation} onChange={(e) => setForm({ ...form, explanation: e.target.value })} rows={2} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
             </div>
             <div className="flex gap-3">
               <button onClick={submit} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
@@ -1852,14 +1865,14 @@ function AdminPanel({ bank, setBank, onExit }) {
                   value={bulkForm.program}
                   onChange={(e) => setBulkForm({ program: e.target.value, year: "", block: "", subject: "", topic: "", source: bulkForm.source })}
                   className="w-full px-3 py-2"
-                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
                 >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source label</label>
-                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             </div>
 
@@ -1871,7 +1884,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={bulkForm.subject}
                     onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value, topic: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
@@ -1884,7 +1897,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
                     disabled={!bulkForm.subject}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
@@ -1901,7 +1914,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={bulkForm.year}
                     onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select year…</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
@@ -1914,7 +1927,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "" })}
                     disabled={!bulkForm.year}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.year ? "Select block…" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[bulkForm.year] || {}).map((b) => <option key={b}>{b}</option>)}
@@ -1927,7 +1940,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })}
                     disabled={!bulkForm.block}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
@@ -1939,7 +1952,7 @@ function AdminPanel({ bank, setBank, onExit }) {
             {bulkForm.program !== "MDCAT" && bulkForm.program !== "MBBS" && (
               <div className="mb-4">
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             )}
 
@@ -1995,7 +2008,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 </div>
                 <div className="space-y-3">
                   {bulkResults.map((m, idx) => (
-                    <div key={idx} className="p-4" style={{ background: "#fff", border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
+                    <div key={idx} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
                       <div className="flex items-start justify-between gap-3 mb-2">
                         <label className="flex items-center gap-2 text-sm">
                           <input type="checkbox" checked={m.include} onChange={() => toggleBulkInclude(idx)} />
@@ -2015,7 +2028,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                         onChange={(e) => updateBulkResult(idx, { question: e.target.value })}
                         rows={2}
                         className="w-full px-3 py-2 mb-2"
-                        style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'Source Serif 4', serif" }}
+                        style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "'Source Serif 4', serif" }}
                       />
                       <div className="space-y-1 mb-2">
                         {m.options.map((opt, oi) => (
@@ -2033,7 +2046,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                                 updateBulkResult(idx, { options: opts });
                               }}
                               className="flex-1 px-3 py-1.5 text-sm"
-                              style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                              style={{ border: `1px solid ${T.line}`, background: T.card }}
                             />
                           </div>
                         ))}
@@ -2045,7 +2058,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                         rows={2}
                         placeholder="Add an explanation…"
                         className="w-full px-3 py-2 text-sm"
-                        style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                        style={{ border: `1px solid ${T.line}`, background: T.card }}
                       />
                     </div>
                   ))}
@@ -2070,7 +2083,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               onChange={(e) => setNewPass(e.target.value)}
               placeholder="New passcode"
               className="w-full px-3 py-2 mb-3"
-              style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+              style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "'IBM Plex Mono', monospace" }}
             />
             <button onClick={changePass} className="px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>Update passcode</button>
             {passMsg && <div className="text-sm mt-2" style={{ color: T.emerald }}>{passMsg}</div>}
