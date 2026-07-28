@@ -1101,12 +1101,12 @@ function Quiz({ questions, subject, onFinish, onExit }) {
                 <BookOpen size={14} /> Show Explanation
               </button>
             ) : (
-              <div className="text-sm p-3" style={{ background: T.amberSoft, color: T.ink }}>
+              <div className="text-sm p-3" style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}>
                 <div className="flex items-center justify-between mb-1">
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-xs uppercase tracking-widest">
                     Explanation
                   </span>
-                  <button onClick={toggleExplain} style={{ color: T.inkSoft }}>
+                  <button onClick={toggleExplain} style={{ color: "#3A2C0E" }}>
                     <X size={14} />
                   </button>
                 </div>
@@ -1200,7 +1200,7 @@ function Results({ result, subject, onRetry, onHome }) {
                   })}
                 </div>
                 {q.explanation && (
-                  <div className="mt-3 text-sm p-3" style={{ background: T.amberSoft, color: T.ink }}>
+                  <div className="mt-3 text-sm p-3" style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-xs uppercase tracking-widest block mb-1" >Explanation</span>
                     {q.explanation}
                   </div>
