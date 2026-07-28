@@ -365,7 +365,7 @@ function BottomNav({ tab, setTab }) {
             key={it.key}
             onClick={() => setTab(it.key)}
             className="flex flex-col items-center gap-1 px-3 py-1"
-            style={{ color: active ? "#1B3F7A" : T.inkSoft }}
+            style={{ color: active ? "#6FA3F5" : T.inkSoft }}
           >
             <Icon size={20} />
             <span className="text-[11px]" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>{it.label}</span>
@@ -522,7 +522,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
             Focus Today, <span style={{ color: "#6FA3F5" }}>Heal Tomorrow.</span>
           </h1>
           <p className="text-sm" style={{ color: "#B9C4DE" }}>
-            Your all-in-one platform for MDCAT, BSN &amp; MBBS success.
+            Your all-in-one platform for MDCAT, KMU CAT, BSN &amp; MBBS success.
           </p>
         </div>
       </div>
