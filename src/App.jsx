@@ -70,6 +70,40 @@ function subjectIcon(name) {
 
 const DEFAULT_PASSCODE = "mdcat2026";
 
+// ---------- Fixed folder structures ----------
+const MDCAT_TOPICS = {
+  Biology: [
+    "Acellular Life", "Bioenergetics", "Biological Molecules", "Cell Structure & Function",
+    "Coordination & Control (Nervous & Chemical Coordination)", "Enzymes", "Evolution", "Reproduction",
+    "Support & Movement", "Inheritance", "Circulation", "Immunity", "Respiration", "Digestion",
+    "Homeostasis", "Biotechnology",
+  ],
+  Chemistry: [
+    "Introduction & Fundamental Concepts of Chemistry", "Atomic Structure", "Gases", "Liquids", "Solids",
+    "Chemical Equilibrium", "Reaction Kinetics", "Thermochemistry & Energetics of Chemical Reactions",
+    "Electrochemistry", "Chemical Bonding", "S- and P-Block Elements", "Transition Elements",
+    "Fundamental Principles of Organic Chemistry", "Chemistry of Hydrocarbons", "Alkyl Halides",
+    "Alcohols and Phenols", "Aldehydes and Ketones", "Carboxylic Acids", "Macromolecules", "Industrial Chemistry",
+  ],
+  Physics: [
+    "Vectors and Equilibrium", "Force and Motion", "Work and Energy", "Rotational and Circular Motion",
+    "Fluid Dynamics", "Waves", "Thermodynamics", "Electrostatics", "Current Electricity",
+    "Electromagnetism", "Electromagnetic Induction", "Alternating Current", "Electronics",
+    "Dawn of Modern Physics", "Atomic Spectra", "Nuclear Physics",
+  ],
+  English: [
+    "Reading and Thinking Skills", "Formal and Lexical Aspects of Language", "Writing Skills",
+  ],
+};
+
+const MBBS_STRUCTURE = {
+  "2nd Year": {
+    "Block D": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+    "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+    "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+  },
+};
+
 const SEED_MCQS = [
   { id: "s1", program: "MDCAT", subject: "Biology", topic: "Cell Biology", source: "Practice",
     question: "Which organelle is primarily responsible for ATP synthesis in eukaryotic cells?",
@@ -123,7 +157,7 @@ const SEED_MCQS = [
     explanation: "'Meticulous' means showing great attention to detail; 'painstaking' is the closest synonym." },
 ];
 
-// ---------- Storage helpers (Supabase = shared, localStorage = personal) ----------
+// ---------- Storage helpers (Supabase = shared, localStorage = personal fallback) ----------
 async function loadBank() {
   const data = await loadSharedData();
   return data && data.bank ? data.bank : null;
@@ -138,11 +172,51 @@ async function loadPasscode() {
 async function savePasscode(pc) {
   await saveSharedData({ passcode: pc });
 }
-async function loadStats() {
-  return loadLocalStats();
+
+// ---------- Bulk PDF -> AI MCQ extraction helpers ----------
+let _pdfjsLibPromise = null;
+async function getPdfJs() {
+  if (!_pdfjsLibPromise) {
+    _pdfjsLibPromise = (async () => {
+      const lib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs");
+      lib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs";
+      return lib;
+    })();
+  }
+  return _pdfjsLibPromise;
 }
-async function saveStats(stats) {
-  saveLocalStats(stats);
+
+async function extractPdfText(file, onProgress) {
+  const pdfjsLib = await getPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((it) => it.str).join(" ") + "\n";
+    if (onProgress) onProgress(i, pdf.numPages);
+  }
+  return text;
+}
+
+function chunkText(text, chunkSize = 9000) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+async function parseMcqsChunk(textChunk) {
+  const res = await fetch("/api/parse-mcqs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: textChunk }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "AI parsing failed.");
+  return data.mcqs || [];
 }
 
 function uid() {
@@ -484,16 +558,31 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
   );
 }
 
-// ---------- Program page: choose Subject ----------
-function ProgramPage({ program, bank, onBack, onOpenSubject }) {
+// ---------- Program page: choose Subject (or Year for MBBS) ----------
+function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
   const progQuestions = bank.filter((q) => q.program === program);
-  const subjects = useMemo(() => {
+  const isMBBS = program === "MBBS";
+  const isMDCAT = program === "MDCAT";
+
+  const groups = useMemo(() => {
+    if (isMBBS) {
+      return Object.keys(MBBS_STRUCTURE).map((name) => ({
+        name,
+        count: progQuestions.filter((q) => (q.year || "") === name).length,
+      }));
+    }
+    if (isMDCAT) {
+      return Object.keys(MDCAT_TOPICS).map((name) => ({
+        name,
+        count: progQuestions.filter((q) => q.subject === name).length,
+      }));
+    }
     const map = {};
     progQuestions.forEach((q) => {
       map[q.subject] = (map[q.subject] || 0) + 1;
     });
     return Object.keys(map).sort().map((name) => ({ name, count: map[name] }));
-  }, [progQuestions]);
+  }, [progQuestions, isMBBS, isMDCAT]);
 
   const progInfo = PROGRAMS.find((p) => p.key === program);
 
@@ -508,12 +597,135 @@ function ProgramPage({ program, bank, onBack, onOpenSubject }) {
           {progInfo ? progInfo.label : program}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {progQuestions.length} question{progQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
+          {progQuestions.length} question{progQuestions.length === 1 ? "" : "s"} across {groups.length} {isMBBS ? "year" : "subject"}{groups.length === 1 ? "" : "s"}
+        </p>
+
+        {groups.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No questions yet for this program.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {groups.map((s) => {
+              const Icon = isMBBS ? GraduationCap : subjectIcon(s.name);
+              return (
+                <button
+                  key={s.name}
+                  onClick={() => (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                  >
+                    <Icon size={22} style={{ color: T.ink }} />
+                  </div>
+                  <div>
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                      {s.name}
+                    </span>
+                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                      {s.count} question{s.count === 1 ? "" : "s"} available
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- MBBS Year page (lists Blocks within a chosen year) ----------
+function YearPage({ program, year, bank, onBack, onOpenBlock }) {
+  const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
+  const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
+  const blocks = blockNames.map((name) => ({
+    name,
+    count: yearQuestions.filter((q) => (q.block || "") === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to years
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {year}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {yearQuestions.length} question{yearQuestions.length === 1 ? "" : "s"} across {blocks.length} block{blocks.length === 1 ? "" : "s"}
+        </p>
+
+        {blocks.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No blocks defined for this year.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {blocks.map((b) => (
+              <button
+                key={b.name}
+                onClick={() => onOpenBlock(b.name)}
+                className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+              >
+                <div
+                  className="flex items-center justify-center shrink-0"
+                  style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                >
+                  <Library size={22} style={{ color: T.ink }} />
+                </div>
+                <div>
+                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                    {b.name}
+                  </span>
+                  <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                    {b.count} question{b.count === 1 ? "" : "s"} available
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
+function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
+  const blockQuestions = bank.filter(
+    (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
+  );
+  const subjectNames = (MBBS_STRUCTURE[year] && MBBS_STRUCTURE[year][block]) || [];
+  const subjects = subjectNames.map((name) => ({
+    name,
+    count: blockQuestions.filter((q) => q.subject === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to blocks
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {year} · {block}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {blockQuestions.length} question{blockQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
         </p>
 
         {subjects.length === 0 ? (
           <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            No questions yet for this program.
+            No subjects defined for this block.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -550,9 +762,65 @@ function ProgramPage({ program, bank, onBack, onOpenSubject }) {
   );
 }
 
-// ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, subject, bank, onBack, onStart }) {
+// ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
+function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
+  const topicNames = MDCAT_TOPICS[subject] || [];
+  const topics = topicNames.map((name) => ({
+    name,
+    count: subjQuestions.filter((q) => q.topic === name).length,
+  }));
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back to subjects
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {subject}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {subjQuestions.length} question{subjQuestions.length === 1 ? "" : "s"} across {topics.length} topic{topics.length === 1 ? "" : "s"}
+        </p>
+
+        {topics.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No topics defined for this subject.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {topics.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => onOpenTopic(t.name)}
+                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
+                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+              >
+                <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
+                <span className="text-xs shrink-0" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                  {t.count} q
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Subject setup (choose source + count) ----------
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart }) {
+  const subjQuestions = bank.filter(
+    (q) =>
+      q.program === program &&
+      q.subject === subject &&
+      (year ? (q.year || "") === year : true) &&
+      (block ? (q.block || "") === block : true) &&
+      (topic ? q.topic === topic : true)
+  );
   const sources = useMemo(() => {
     const set = new Set(subjQuestions.map((q) => q.source));
     return ["All", ...Array.from(set).sort()];
@@ -797,12 +1065,9 @@ function Results({ result, subject, onRetry, onHome }) {
   );
 }
 
-// ---------- Admin ----------
-const EMPTY_FORM = { program: "MDCAT", subject: "", topic: "", source: "Practice", question: "", options: ["", "", "", ""], correct: 0, explanation: "" };
-
 // ---------- Student Auth (Sign up / Log in) ----------
 function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState("login"); // login | signup
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -917,6 +1182,9 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
+// ---------- Admin ----------
+const EMPTY_FORM = { program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Practice", question: "", options: ["", "", "", ""], correct: 0, explanation: "" };
+
 function AdminGate({ onUnlock, onBack }) {
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
@@ -972,6 +1240,114 @@ function AdminPanel({ bank, setBank, onExit }) {
   const [newPass, setNewPass] = useState("");
   const [passMsg, setPassMsg] = useState("");
 
+  const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkStatus, setBulkStatus] = useState("idle");
+  const [bulkProgressText, setBulkProgressText] = useState("");
+  const [bulkError, setBulkError] = useState("");
+  const [bulkResults, setBulkResults] = useState([]);
+
+  const bulkClassificationReady =
+    bulkForm.program === "MBBS"
+      ? !!(bulkForm.year && bulkForm.block && bulkForm.subject)
+      : !!(bulkForm.subject && (bulkForm.program === "MDCAT" ? bulkForm.topic : true));
+
+  const runBulkExtract = async () => {
+    if (!bulkFile) {
+      setBulkError("Please choose a PDF file first.");
+      return;
+    }
+    if (!bulkClassificationReady) {
+      setBulkError("Please choose the Subject/Topic (or Year/Block/Subject for MBBS) before uploading.");
+      return;
+    }
+    setBulkError("");
+    setBulkResults([]);
+    try {
+      setBulkStatus("extracting");
+      setBulkProgressText("Reading PDF…");
+      const fullText = await extractPdfText(bulkFile, (page, total) => {
+        setBulkProgressText(`Reading PDF — page ${page} of ${total}…`);
+      });
+      if (!fullText.trim()) {
+        setBulkError("Could not find any text in this PDF (it may be a scanned image). Try a text-based PDF.");
+        setBulkStatus("error");
+        return;
+      }
+
+      setBulkStatus("analyzing");
+      const chunks = chunkText(fullText, 9000);
+      let all = [];
+      for (let i = 0; i < chunks.length; i++) {
+        setBulkProgressText(`Analyzing with AI — part ${i + 1} of ${chunks.length}…`);
+        const mcqs = await parseMcqsChunk(chunks[i]);
+        all = all.concat(mcqs);
+      }
+
+      const cleaned = all
+        .filter((m) => m && m.question && Array.isArray(m.options) && m.options.length === 4)
+        .map((m) => ({
+          question: String(m.question).trim(),
+          options: m.options.map((o) => String(o).trim()),
+          correct: Number.isInteger(m.correct) && m.correct >= 0 && m.correct <= 3 ? m.correct : 0,
+          explanation: m.explanation ? String(m.explanation).trim() : "",
+          answer_source: m.answer_source === "text" ? "text" : "ai",
+          include: true,
+        }));
+
+      if (cleaned.length === 0) {
+        setBulkError("No MCQs could be extracted from this PDF. Please check the file and try again.");
+        setBulkStatus("error");
+        return;
+      }
+
+      setBulkResults(cleaned);
+      setBulkStatus("done");
+      setBulkProgressText("");
+    } catch (e) {
+      setBulkError(String(e?.message || e));
+      setBulkStatus("error");
+    }
+  };
+
+  const toggleBulkInclude = (idx) => {
+    setBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, include: !m.include } : m)));
+  };
+
+  const updateBulkResult = (idx, patch) => {
+    setBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  };
+
+  const saveBulkResults = async () => {
+    const toAdd = bulkResults
+      .filter((m) => m.include)
+      .map((m) => ({
+        id: uid(),
+        program: bulkForm.program,
+        year: bulkForm.program === "MBBS" ? bulkForm.year : "",
+        block: bulkForm.program === "MBBS" ? bulkForm.block : "",
+        subject: bulkForm.subject,
+        topic: bulkForm.program === "MDCAT" ? bulkForm.topic : "",
+        source: bulkForm.source,
+        question: m.question,
+        options: m.options,
+        correct: m.correct,
+        explanation: m.explanation,
+      }));
+    if (toAdd.length === 0) {
+      setBulkError("No questions selected to add.");
+      return;
+    }
+    const next = [...bank, ...toAdd];
+    setBank(next);
+    await saveBank(next);
+    setBulkResults([]);
+    setBulkStatus("idle");
+    setBulkFile(null);
+    alert(`${toAdd.length} question(s) added to the bank.`);
+    setTab("list");
+  };
+
   const filtered = bank.filter((q) => {
     if (filterProgram !== "All" && q.program !== filterProgram) return false;
     if (search && !q.question.toLowerCase().includes(search.toLowerCase()) && !q.topic.toLowerCase().includes(search.toLowerCase()) && !q.subject.toLowerCase().includes(search.toLowerCase())) return false;
@@ -988,9 +1364,20 @@ function AdminPanel({ bank, setBank, onExit }) {
   };
 
   const submit = async () => {
-    if (!form.question.trim() || form.options.some((o) => !o.trim()) || !form.topic.trim() || !form.subject.trim()) {
-      alert("Please fill in the subject, topic, question, and all four options.");
+    if (!form.question.trim() || form.options.some((o) => !o.trim())) {
+      alert("Please fill in the question and all four options.");
       return;
+    }
+    if (form.program === "MBBS") {
+      if (!form.year.trim() || !form.block.trim() || !form.subject.trim()) {
+        alert("Please select Year, Block, and Subject for MBBS.");
+        return;
+      }
+    } else {
+      if (!form.subject.trim() || !form.topic.trim()) {
+        alert("Please fill in the subject and topic.");
+        return;
+      }
     }
     let next;
     if (editingId) {
@@ -1028,6 +1415,7 @@ function AdminPanel({ bank, setBank, onExit }) {
           {[
             { k: "list", label: "All questions" },
             { k: "form", label: editingId ? "Edit question" : "Add question" },
+            { k: "bulk", label: "Bulk Upload (PDF)" },
             { k: "settings", label: "Settings" },
           ].map((t) => (
             <button
@@ -1081,7 +1469,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
-                      {q.program} · {q.subject} · {q.topic} · {q.source}
+                      {q.program} · {q.year ? `${q.year} · ` : ""}{q.block ? `${q.block} · ` : ""}{q.subject} · {q.topic ? `${q.topic} · ` : ""}{q.source}
                     </div>
                     <div style={{ fontFamily: "'Source Serif 4', serif" }}>{q.question}</div>
                   </div>
@@ -1105,25 +1493,107 @@ function AdminPanel({ bank, setBank, onExit }) {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Program</label>
-                <select value={form.program} onChange={(e) => setForm({ ...form, program: e.target.value })} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+                <select
+                  value={form.program}
+                  onChange={(e) => setForm({ ...form, program: e.target.value, year: "", block: "", subject: "", topic: "" })}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
-              </div>
-              <div>
-                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Biology" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Cell Biology" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source</label>
                 <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
               </div>
             </div>
+
+            {form.program === "MDCAT" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={form.subject}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value, topic: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select subject…</option>
+                    {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <select
+                    value={form.topic}
+                    onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                    disabled={!form.subject}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
+                    {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {form.program === "MBBS" && (
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
+                  <select
+                    value={form.year}
+                    onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select year…</option>
+                    {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
+                  <select
+                    value={form.block}
+                    onChange={(e) => setForm({ ...form, block: e.target.value, subject: "" })}
+                    disabled={!form.year}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.year ? "Select block…" : "Choose year first"}</option>
+                    {Object.keys(MBBS_STRUCTURE[form.year] || {}).map((b) => <option key={b}>{b}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={form.subject}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                    disabled={!form.block}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
+                    {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {form.program !== "MDCAT" && form.program !== "MBBS" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                </div>
+              </div>
+            )}
+
             <div className="mb-4">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Question</label>
               <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
@@ -1163,6 +1633,209 @@ function AdminPanel({ bank, setBank, onExit }) {
           </div>
         )}
 
+        {tab === "bulk" && (
+          <div className="max-w-3xl">
+            <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
+              Upload a PDF of MCQs (e.g. a past paper). The AI will read it, split out each question, and — if the
+              correct answer isn't marked in the file — figure it out itself. Review the results below before saving.
+            </p>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Program</label>
+                <select
+                  value={bulkForm.program}
+                  onChange={(e) => setBulkForm({ program: e.target.value, year: "", block: "", subject: "", topic: "", source: bulkForm.source })}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                >
+                  {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source label</label>
+                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              </div>
+            </div>
+
+            {bulkForm.program === "MDCAT" && (
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={bulkForm.subject}
+                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value, topic: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select subject…</option>
+                    {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  <select
+                    value={bulkForm.topic}
+                    onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
+                    disabled={!bulkForm.subject}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
+                    {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {bulkForm.program === "MBBS" && (
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
+                  <select
+                    value={bulkForm.year}
+                    onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "" })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">Select year…</option>
+                    {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
+                  <select
+                    value={bulkForm.block}
+                    onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "" })}
+                    disabled={!bulkForm.year}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.year ? "Select block…" : "Choose year first"}</option>
+                    {Object.keys(MBBS_STRUCTURE[bulkForm.year] || {}).map((b) => <option key={b}>{b}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                  <select
+                    value={bulkForm.subject}
+                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })}
+                    disabled={!bulkForm.block}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  >
+                    <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
+                    {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {bulkForm.program !== "MDCAT" && bulkForm.program !== "MBBS" && (
+              <div className="mb-4">
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>PDF file</label>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setBulkFile(e.target.files?.[0] || null)}
+                className="w-full text-sm"
+              />
+            </div>
+
+            <button
+              onClick={runBulkExtract}
+              disabled={bulkStatus === "extracting" || bulkStatus === "analyzing"}
+              className="flex items-center gap-2 px-5 py-2 text-sm mb-4"
+              style={{ background: T.ink, color: T.paper, opacity: bulkStatus === "extracting" || bulkStatus === "analyzing" ? 0.6 : 1 }}
+            >
+              <Plus size={16} />
+              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Working…" : "Extract & Analyze with AI"}
+            </button>
+
+            {(bulkStatus === "extracting" || bulkStatus === "analyzing") && (
+              <div className="text-sm mb-4" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                {bulkProgressText}
+              </div>
+            )}
+
+            {bulkError && (
+              <div className="p-3 text-sm mb-4" style={{ border: `1px solid ${T.rose}`, color: T.rose, background: T.roseSoft }}>
+                {bulkError}
+              </div>
+            )}
+
+            {bulkResults.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-sm" style={{ color: T.inkSoft }}>
+                    {bulkResults.length} question(s) found — {bulkResults.filter((m) => m.include).length} selected. Review, then save.
+                  </div>
+                  <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                    <Save size={16} /> Add selected to bank
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {bulkResults.map((m, idx) => (
+                    <div key={idx} className="p-4" style={{ background: "#fff", border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <label className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={m.include} onChange={() => toggleBulkInclude(idx)} />
+                          Include
+                        </label>
+                        {m.answer_source === "ai" && (
+                          <span
+                            className="text-xs px-2 py-0.5 shrink-0"
+                            style={{ background: T.amberSoft, color: T.amber, fontFamily: "'IBM Plex Mono', monospace" }}
+                          >
+                            AI guessed the answer — please verify
+                          </span>
+                        )}
+                      </div>
+                      <textarea
+                        value={m.question}
+                        onChange={(e) => updateBulkResult(idx, { question: e.target.value })}
+                        rows={2}
+                        className="w-full px-3 py-2 mb-2"
+                        style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'Source Serif 4', serif" }}
+                      />
+                      <div className="space-y-1">
+                        {m.options.map((opt, oi) => (
+                          <div key={oi} className="flex items-center gap-3">
+                            <Bubble
+                              letter={["A", "B", "C", "D"][oi]}
+                              state={m.correct === oi ? "correct" : "idle"}
+                              onClick={() => updateBulkResult(idx, { correct: oi })}
+                            />
+                            <input
+                              value={opt}
+                              onChange={(e) => {
+                                const opts = [...m.options];
+                                opts[oi] = e.target.value;
+                                updateBulkResult(idx, { options: opts });
+                              }}
+                              className="flex-1 px-3 py-1.5 text-sm"
+                              style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm mt-4" style={{ background: T.emerald, color: "#fff" }}>
+                  <Save size={16} /> Add selected to bank
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "settings" && (
           <div className="max-w-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -1193,6 +1866,9 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [view, setView] = useState("home");
   const [program, setProgram] = useState(null);
+  const [year, setYear] = useState(null);
+  const [block, setBlock] = useState(null);
+  const [topic, setTopic] = useState(null);
   const [subject, setSubject] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
@@ -1214,7 +1890,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAdminURL && !user) return; // wait for login before loading personal data
+    if (!isAdminURL && !user) return;
     (async () => {
       let b = await loadBank();
       if (!b) {
@@ -1232,8 +1908,19 @@ export default function App() {
     })();
   }, [user, isAdminURL]);
 
-  const openProgram = (p) => { setProgram(p); setView("program"); };
-  const openSubject = (s) => { setSubject(s); setView("subject"); };
+  const openProgram = (p) => { setProgram(p); setYear(null); setBlock(null); setTopic(null); setView("program"); };
+  const openYear = (y) => { setYear(y); setBlock(null); setView("year"); };
+  const openBlock = (b) => { setBlock(b); setView("block"); };
+  const openSubject = (s) => {
+    setSubject(s);
+    if (program === "MDCAT") {
+      setTopic(null);
+      setView("topic");
+    } else {
+      setView("subject");
+    }
+  };
+  const openTopic = (t) => { setTopic(t); setView("subject"); };
   const startQuiz = (qs) => { setQuizQuestions(qs); setView("quiz"); };
 
   const finishQuiz = async (res) => {
@@ -1243,9 +1930,10 @@ export default function App() {
       totalCorrect: (stats?.totalCorrect || 0) + res.correct,
       bySubject: { ...(stats?.bySubject || {}) },
     };
-    next.bySubject[subject] = {
-      attempted: (next.bySubject[subject]?.attempted || 0) + res.questions.length,
-      correct: (next.bySubject[subject]?.correct || 0) + res.correct,
+    const statsKey = block ? `${year} | ${block} | ${subject}` : year ? `${year} - ${subject}` : topic ? `${subject} - ${topic}` : subject;
+    next.bySubject[statsKey] = {
+      attempted: (next.bySubject[statsKey]?.attempted || 0) + res.questions.length,
+      correct: (next.bySubject[statsKey]?.correct || 0) + res.correct,
     };
     setStats(next);
     if (user) await saveUserStats(user.id, next);
@@ -1307,6 +1995,41 @@ export default function App() {
         bank={bank}
         onBack={() => setView("home")}
         onOpenSubject={openSubject}
+        onOpenYear={openYear}
+      />
+    );
+  }
+  if (view === "year") {
+    return (
+      <YearPage
+        program={program}
+        year={year}
+        bank={bank}
+        onBack={() => setView("program")}
+        onOpenBlock={openBlock}
+      />
+    );
+  }
+  if (view === "block") {
+    return (
+      <BlockPage
+        program={program}
+        year={year}
+        block={block}
+        bank={bank}
+        onBack={() => setView("year")}
+        onOpenSubject={openSubject}
+      />
+    );
+  }
+  if (view === "topic") {
+    return (
+      <TopicPage
+        program={program}
+        subject={subject}
+        bank={bank}
+        onBack={() => setView("program")}
+        onOpenTopic={openTopic}
       />
     );
   }
@@ -1314,9 +2037,12 @@ export default function App() {
     return (
       <SubjectSetup
         program={program}
+        year={program === "MBBS" ? year : null}
+        block={program === "MBBS" ? block : null}
+        topic={program === "MDCAT" ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView("program")}
+        onBack={() => setView(program === "MBBS" ? "block" : program === "MDCAT" ? "topic" : "program")}
         onStart={startQuiz}
       />
     );
