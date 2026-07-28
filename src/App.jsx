@@ -36,17 +36,17 @@ const PROGRAMS = [
     key: "MDCAT", label: "MDCAT", icon: Target, tagline: "Your Journey Starts Here",
     gradient: "linear-gradient(135deg, #0F2A5C, #1B3F7A)",
     links: [
-      { label: "Practice Questions", icon: ClipboardCheck, action: "open" },
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "Mock Tests", icon: FileText, action: "open" },
+      { label: "Mock Exam", icon: FileText, action: "open" },
     ],
   },
   {
     key: "BSN", label: "BSN", icon: HeartPulse, tagline: "Compassion in Every Step",
     gradient: "linear-gradient(135deg, #0E4A45, #16665F)",
     links: [
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "MCQs", icon: ClipboardCheck, action: "open" },
       { label: "Past Papers", icon: FileText, action: "open" },
     ],
   },
@@ -54,8 +54,8 @@ const PROGRAMS = [
     key: "MBBS", label: "MBBS", icon: Stethoscope, tagline: "Learn. Understand. Serve.",
     gradient: "linear-gradient(135deg, #0F2A5C, #1B3F7A)",
     links: [
-      { label: "Subjects", icon: Library, action: "open" },
-      { label: "MCQs", icon: ClipboardCheck, action: "open" },
+      { label: "Semester", icon: Library, action: "open" },
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Clinical Cases", icon: FlaskRound, action: "soon" },
     ],
   },
