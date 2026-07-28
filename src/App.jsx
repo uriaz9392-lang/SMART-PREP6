@@ -211,25 +211,6 @@ async function extractPdfText(file, onProgress) {
   return text;
 }
 
-function chunkText(text, chunkSize = 9000) {
-  const chunks = [];
-  for (let i = 0; i < text.length; i += chunkSize) {
-    chunks.push(text.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
-
-async function parseMcqsChunk(textChunk) {
-  const res = await fetch("/api/parse-mcqs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: textChunk }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "AI parsing failed.");
-  return data.mcqs || [];
-}
-
 // ---------- Regex-based parsing (no AI) for a known "Q1) ... A) B) C) D) Answer: Explanation:" format ----------
 
 // Splits raw PDF text into one block per question, starting at each "Q<number>)" marker.
@@ -294,20 +275,7 @@ function parseQuestionBlock(block) {
 
 // Groups an array of raw text blocks into fewer, larger batches (under maxChars each)
 // so incomplete questions can still be sent to the AI in as few requests as possible.
-function batchBlocks(blocks, maxChars = 9000) {
-  const batches = [];
-  let current = "";
-  blocks.forEach((b) => {
-    if (current.length > 0 && current.length + b.length + 2 > maxChars) {
-      batches.push(current);
-      current = b;
-    } else {
-      current += (current ? "\n\n" : "") + b;
-    }
-  });
-  if (current) batches.push(current);
-  return batches;
-}
+
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -1368,61 +1336,40 @@ function AdminPanel({ bank, setBank, onExit }) {
       }
 
       setBulkStatus("analyzing");
-      setBulkProgressText("Checking which questions already have Answer + Explanation…");
+      setBulkProgressText("Parsing questions from the PDF text…");
 
-      // Try to parse the known "Q1) ... A) B) C) D) Answer: Explanation:" format with plain text parsing first.
+      // Pure text parsing — no AI calls at all. Expects "Q1) ... A) B) C) D) Answer: Explanation:" format.
       const blocks = splitIntoQuestionBlocks(fullText);
 
-      const fromText = [];
-      const needsAiBlocks = [];
-
-      if (blocks.length > 0) {
-        blocks.forEach((block) => {
-          const parsed = parseQuestionBlock(block);
-          if (parsed.complete) {
-            fromText.push({
-              question: parsed.question,
-              options: parsed.options,
-              correct: parsed.correct,
-              explanation: parsed.explanation,
-              answer_source: "text",
-              include: true,
-            });
-          } else {
-            needsAiBlocks.push(block);
-          }
-        });
-      } else {
-        // Doesn't match the structured format at all — fall back to sending the whole document to AI.
-        needsAiBlocks.push(...chunkText(fullText, 9000));
+      if (blocks.length === 0) {
+        setBulkError(
+          'This PDF doesn\'t match the expected format ("Q1) question / A) B) C) D) / Answer: / Explanation:"). No questions could be extracted.'
+        );
+        setBulkStatus("error");
+        return;
       }
 
-      let fromAi = [];
-      if (needsAiBlocks.length > 0) {
-        const batches = batchBlocks(needsAiBlocks, 9000);
-        let allAi = [];
-        for (let i = 0; i < batches.length; i++) {
-          setBulkProgressText(
-            blocks.length > 0
-              ? `Asking AI about ${needsAiBlocks.length} incomplete question(s) — batch ${i + 1} of ${batches.length}…`
-              : `Analyzing with AI — part ${i + 1} of ${batches.length}…`
-          );
-          const mcqs = await parseMcqsChunk(batches[i]);
-          allAi = allAi.concat(mcqs);
+      const complete = [];
+      const incomplete = [];
+
+      blocks.forEach((block) => {
+        const parsed = parseQuestionBlock(block);
+        const entry = {
+          question: parsed.question,
+          options: parsed.options.length === 4 ? parsed.options : ["", "", "", ""],
+          correct: parsed.correct !== null ? parsed.correct : 0,
+          explanation: parsed.explanation,
+          answer_source: parsed.complete ? "text" : "missing",
+          include: true,
+        };
+        if (parsed.complete) {
+          complete.push(entry);
+        } else {
+          incomplete.push(entry);
         }
-        fromAi = allAi
-          .filter((m) => m && m.question && Array.isArray(m.options) && m.options.length === 4)
-          .map((m) => ({
-            question: String(m.question).trim(),
-            options: m.options.map((o) => String(o).trim()),
-            correct: Number.isInteger(m.correct) && m.correct >= 0 && m.correct <= 3 ? m.correct : 0,
-            explanation: m.explanation ? String(m.explanation).trim() : "",
-            answer_source: m.answer_source === "text" ? "text" : "ai",
-            include: true,
-          }));
-      }
+      });
 
-      const combined = [...fromText, ...fromAi];
+      const combined = [...complete, ...incomplete];
 
       if (combined.length === 0) {
         setBulkError("No MCQs could be extracted from this PDF. Please check the file and try again.");
@@ -1431,9 +1378,9 @@ function AdminPanel({ bank, setBank, onExit }) {
       }
 
       setBulkSummary(
-        blocks.length > 0
-          ? `${fromText.length} question(s) parsed directly from the PDF text (no AI used) · ${fromAi.length} question(s) needed AI help`
-          : `This PDF didn't match the "Q1) / A) B) C) D) / Answer: / Explanation:" format, so all ${fromAi.length} question(s) were parsed with AI`
+        incomplete.length > 0
+          ? `${complete.length} question(s) parsed completely · ${incomplete.length} question(s) are missing Answer and/or Explanation — please fill those in manually below before saving`
+          : `${complete.length} question(s) parsed completely — all good.`
       );
       setBulkResults(combined);
       setBulkStatus("done");
@@ -1771,8 +1718,9 @@ function AdminPanel({ bank, setBank, onExit }) {
         {tab === "bulk" && (
           <div className="max-w-3xl">
             <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
-              Upload a PDF of MCQs (e.g. a past paper). The AI will read it, split out each question, and — if the
-              correct answer isn't marked in the file — figure it out itself. Review the results below before saving.
+              Upload a PDF of MCQs (e.g. a past paper) formatted as <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>Q1) question / A) B) C) D) / Answer: / Explanation:</code>.
+              Everything is extracted directly from the text — no AI is used. Questions missing an Answer or
+              Explanation will be flagged so you can fill them in yourself before saving.
             </p>
 
             <div className="grid grid-cols-2 gap-4 mb-4">
@@ -1890,7 +1838,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               style={{ background: T.ink, color: T.paper, opacity: bulkStatus === "extracting" || bulkStatus === "analyzing" ? 0.6 : 1 }}
             >
               <Plus size={16} />
-              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Working…" : "Extract & Analyze with AI"}
+              {bulkStatus === "extracting" || bulkStatus === "analyzing" ? "Working…" : "Extract Questions from PDF"}
             </button>
 
             {(bulkStatus === "extracting" || bulkStatus === "analyzing") && (
@@ -1931,12 +1879,12 @@ function AdminPanel({ bank, setBank, onExit }) {
                           <input type="checkbox" checked={m.include} onChange={() => toggleBulkInclude(idx)} />
                           Include
                         </label>
-                        {m.answer_source === "ai" && (
+                        {m.answer_source === "missing" && (
                           <span
                             className="text-xs px-2 py-0.5 shrink-0"
-                            style={{ background: T.amberSoft, color: T.amber, fontFamily: "'IBM Plex Mono', monospace" }}
+                            style={{ background: T.roseSoft, color: T.rose, fontFamily: "'IBM Plex Mono', monospace" }}
                           >
-                            AI guessed the answer — please verify
+                            Answer/Explanation missing — fill in manually
                           </span>
                         )}
                       </div>
@@ -1947,7 +1895,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                         className="w-full px-3 py-2 mb-2"
                         style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'Source Serif 4', serif" }}
                       />
-                      <div className="space-y-1">
+                      <div className="space-y-1 mb-2">
                         {m.options.map((opt, oi) => (
                           <div key={oi} className="flex items-center gap-3">
                             <Bubble
@@ -1968,6 +1916,15 @@ function AdminPanel({ bank, setBank, onExit }) {
                           </div>
                         ))}
                       </div>
+                      <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation</label>
+                      <textarea
+                        value={m.explanation}
+                        onChange={(e) => updateBulkResult(idx, { explanation: e.target.value })}
+                        rows={2}
+                        placeholder="Add an explanation…"
+                        className="w-full px-3 py-2 text-sm"
+                        style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                      />
                     </div>
                   ))}
                 </div>
