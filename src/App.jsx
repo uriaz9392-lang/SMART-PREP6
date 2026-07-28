@@ -42,6 +42,15 @@ const PROGRAMS = [
     ],
   },
   {
+    key: "KMUCAT", label: "KMU CAT", icon: Award, tagline: "Your Journey Starts Here",
+    gradient: "linear-gradient(135deg, #4A2E7A, #6C3FA3)",
+    links: [
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
+      { label: "Notes", icon: BookOpen, action: "soon" },
+      { label: "Mock Exam", icon: FileText, action: "open" },
+    ],
+  },
+  {
     key: "BSN", label: "BSN", icon: HeartPulse, tagline: "Compassion in Every Step",
     gradient: "linear-gradient(135deg, #0E4A45, #16665F)",
     links: [
@@ -60,6 +69,9 @@ const PROGRAMS = [
     ],
   },
 ];
+
+// Programs that use the same fixed Subject -> Topic folder structure as MDCAT
+const TOPIC_PROGRAMS = ["MDCAT", "KMUCAT"];
 
 const SUBJECT_ICONS = {
   Biology: Dna,
@@ -653,7 +665,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
 function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
-  const isMDCAT = program === "MDCAT";
+  const isMDCAT = TOPIC_PROGRAMS.includes(program);
 
   const groups = useMemo(() => {
     if (isMBBS) {
@@ -1444,7 +1456,7 @@ function AdminPanel({ bank, setBank, onExit }) {
   const bulkClassificationReady =
     bulkForm.program === "MBBS"
       ? !!(bulkForm.year && bulkForm.block && bulkForm.subject)
-      : !!(bulkForm.subject && (bulkForm.program === "MDCAT" ? bulkForm.topic : true));
+      : !!(bulkForm.subject && (TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : true));
 
   const runBulkExtract = async () => {
     if (!bulkFile) {
@@ -1543,7 +1555,7 @@ function AdminPanel({ bank, setBank, onExit }) {
         year: bulkForm.program === "MBBS" ? bulkForm.year : "",
         block: bulkForm.program === "MBBS" ? bulkForm.block : "",
         subject: bulkForm.subject,
-        topic: bulkForm.program === "MDCAT" ? bulkForm.topic : "",
+        topic: TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : "",
         source: bulkForm.source,
         question: m.question,
         options: m.options,
@@ -1725,7 +1737,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             </div>
 
-            {form.program === "MDCAT" && (
+            {TOPIC_PROGRAMS.includes(form.program) && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
@@ -1798,7 +1810,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             )}
 
-            {form.program !== "MDCAT" && form.program !== "MBBS" && (
+            {!TOPIC_PROGRAMS.includes(form.program) && form.program !== "MBBS" && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
@@ -1876,7 +1888,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             </div>
 
-            {bulkForm.program === "MDCAT" && (
+            {TOPIC_PROGRAMS.includes(bulkForm.program) && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
@@ -1949,7 +1961,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             )}
 
-            {bulkForm.program !== "MDCAT" && bulkForm.program !== "MBBS" && (
+            {!TOPIC_PROGRAMS.includes(bulkForm.program) && bulkForm.program !== "MBBS" && (
               <div className="mb-4">
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
                 <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
@@ -2148,7 +2160,7 @@ export default function App() {
   const openBlock = (b) => { setBlock(b); setView("block"); };
   const openSubject = (s) => {
     setSubject(s);
-    if (program === "MDCAT") {
+    if (TOPIC_PROGRAMS.includes(program)) {
       setTopic(null);
       setView("topic");
     } else {
@@ -2274,10 +2286,10 @@ export default function App() {
         program={program}
         year={program === "MBBS" ? year : null}
         block={program === "MBBS" ? block : null}
-        topic={program === "MDCAT" ? topic : null}
+        topic={TOPIC_PROGRAMS.includes(program) ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView(program === "MBBS" ? "block" : program === "MDCAT" ? "topic" : "program")}
+        onBack={() => setView(program === "MBBS" ? "block" : TOPIC_PROGRAMS.includes(program) ? "topic" : "program")}
         onStart={startQuiz}
       />
     );
