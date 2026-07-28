@@ -194,7 +194,18 @@ async function extractPdfText(file, onProgress) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    text += content.items.map((it) => it.str).join(" ") + "\n";
+    let lastY = null;
+    let line = "";
+    for (const item of content.items) {
+      const y = item.transform ? item.transform[5] : null;
+      if (lastY !== null && y !== null && Math.abs(y - lastY) > 2) {
+        text += line.trim() + "\n";
+        line = "";
+      }
+      line += item.str + " ";
+      lastY = y;
+    }
+    text += line.trim() + "\n\n";
     if (onProgress) onProgress(i, pdf.numPages);
   }
   return text;
@@ -217,6 +228,85 @@ async function parseMcqsChunk(textChunk) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "AI parsing failed.");
   return data.mcqs || [];
+}
+
+// ---------- Regex-based parsing (no AI) for a known "Q1) ... A) B) C) D) Answer: Explanation:" format ----------
+
+// Splits raw PDF text into one block per question, starting at each "Q<number>)" marker.
+function splitIntoQuestionBlocks(text) {
+  const regex = /Q\s*\d+\s*\)/g;
+  const indices = [];
+  let m;
+  while ((m = regex.exec(text)) !== null) {
+    indices.push(m.index);
+  }
+  if (indices.length === 0) return [];
+  const blocks = [];
+  for (let i = 0; i < indices.length; i++) {
+    const start = indices[i];
+    const end = i + 1 < indices.length ? indices[i + 1] : text.length;
+    const block = text.slice(start, end).trim();
+    if (block) blocks.push(block);
+  }
+  return blocks;
+}
+
+// Parses a single question block. Returns { complete, question, options, correct, explanation, rawBlock }.
+// complete=true only if question + all 4 options + answer letter + explanation were all found.
+function parseQuestionBlock(block) {
+  const withoutQNum = block.replace(/^Q\s*\d+\s*\)\s*/, "");
+
+  const optRegex = /(?:^|\n)\s*([ABCD])\s*[).]\s*/g;
+  const optPositions = [];
+  let m;
+  while ((m = optRegex.exec(withoutQNum)) !== null) {
+    optPositions.push({ letter: m[1], markerStart: m.index, contentStart: m.index + m[0].length });
+  }
+
+  if (optPositions.length < 4) {
+    return { complete: false, question: "", options: [], correct: null, explanation: "", rawBlock: block };
+  }
+
+  const questionText = withoutQNum.slice(0, optPositions[0].markerStart).replace(/\n/g, " ").trim();
+
+  const answerMatch = withoutQNum.match(/Answer\s*[:\-]\s*([ABCD])/i);
+  const explanationMatch = withoutQNum.match(/Explanation\s*[:\-]\s*([\s\S]*)$/i);
+
+  const stopIndex = answerMatch ? withoutQNum.indexOf(answerMatch[0]) : withoutQNum.length;
+
+  const options = [];
+  for (let i = 0; i < 4; i++) {
+    const startIdx = optPositions[i].contentStart;
+    const endIdx = i + 1 < optPositions.length ? optPositions[i + 1].markerStart : stopIndex;
+    const optText = withoutQNum.slice(startIdx, Math.max(startIdx, endIdx)).replace(/\n/g, " ").trim();
+    options.push(optText);
+  }
+
+  const correct = answerMatch ? "ABCD".indexOf(answerMatch[1].toUpperCase()) : null;
+  const explanation = explanationMatch ? explanationMatch[1].replace(/\n/g, " ").trim() : "";
+
+  const hasQuestion = questionText.length > 0;
+  const hasAllOptions = options.every((o) => o.length > 0);
+  const complete = hasQuestion && hasAllOptions && correct !== null && correct >= 0 && explanation.length > 0;
+
+  return { complete, question: questionText, options, correct, explanation, rawBlock: block };
+}
+
+// Groups an array of raw text blocks into fewer, larger batches (under maxChars each)
+// so incomplete questions can still be sent to the AI in as few requests as possible.
+function batchBlocks(blocks, maxChars = 9000) {
+  const batches = [];
+  let current = "";
+  blocks.forEach((b) => {
+    if (current.length > 0 && current.length + b.length + 2 > maxChars) {
+      batches.push(current);
+      current = b;
+    } else {
+      current += (current ? "\n\n" : "") + b;
+    }
+  });
+  if (current) batches.push(current);
+  return batches;
 }
 
 function uid() {
@@ -1246,6 +1336,7 @@ function AdminPanel({ bank, setBank, onExit }) {
   const [bulkProgressText, setBulkProgressText] = useState("");
   const [bulkError, setBulkError] = useState("");
   const [bulkResults, setBulkResults] = useState([]);
+  const [bulkSummary, setBulkSummary] = useState("");
 
   const bulkClassificationReady =
     bulkForm.program === "MBBS"
@@ -1263,6 +1354,7 @@ function AdminPanel({ bank, setBank, onExit }) {
     }
     setBulkError("");
     setBulkResults([]);
+    setBulkSummary("");
     try {
       setBulkStatus("extracting");
       setBulkProgressText("Reading PDF…");
@@ -1276,32 +1368,74 @@ function AdminPanel({ bank, setBank, onExit }) {
       }
 
       setBulkStatus("analyzing");
-      const chunks = chunkText(fullText, 9000);
-      let all = [];
-      for (let i = 0; i < chunks.length; i++) {
-        setBulkProgressText(`Analyzing with AI — part ${i + 1} of ${chunks.length}…`);
-        const mcqs = await parseMcqsChunk(chunks[i]);
-        all = all.concat(mcqs);
+      setBulkProgressText("Checking which questions already have Answer + Explanation…");
+
+      // Try to parse the known "Q1) ... A) B) C) D) Answer: Explanation:" format with plain text parsing first.
+      const blocks = splitIntoQuestionBlocks(fullText);
+
+      const fromText = [];
+      const needsAiBlocks = [];
+
+      if (blocks.length > 0) {
+        blocks.forEach((block) => {
+          const parsed = parseQuestionBlock(block);
+          if (parsed.complete) {
+            fromText.push({
+              question: parsed.question,
+              options: parsed.options,
+              correct: parsed.correct,
+              explanation: parsed.explanation,
+              answer_source: "text",
+              include: true,
+            });
+          } else {
+            needsAiBlocks.push(block);
+          }
+        });
+      } else {
+        // Doesn't match the structured format at all — fall back to sending the whole document to AI.
+        needsAiBlocks.push(...chunkText(fullText, 9000));
       }
 
-      const cleaned = all
-        .filter((m) => m && m.question && Array.isArray(m.options) && m.options.length === 4)
-        .map((m) => ({
-          question: String(m.question).trim(),
-          options: m.options.map((o) => String(o).trim()),
-          correct: Number.isInteger(m.correct) && m.correct >= 0 && m.correct <= 3 ? m.correct : 0,
-          explanation: m.explanation ? String(m.explanation).trim() : "",
-          answer_source: m.answer_source === "text" ? "text" : "ai",
-          include: true,
-        }));
+      let fromAi = [];
+      if (needsAiBlocks.length > 0) {
+        const batches = batchBlocks(needsAiBlocks, 9000);
+        let allAi = [];
+        for (let i = 0; i < batches.length; i++) {
+          setBulkProgressText(
+            blocks.length > 0
+              ? `Asking AI about ${needsAiBlocks.length} incomplete question(s) — batch ${i + 1} of ${batches.length}…`
+              : `Analyzing with AI — part ${i + 1} of ${batches.length}…`
+          );
+          const mcqs = await parseMcqsChunk(batches[i]);
+          allAi = allAi.concat(mcqs);
+        }
+        fromAi = allAi
+          .filter((m) => m && m.question && Array.isArray(m.options) && m.options.length === 4)
+          .map((m) => ({
+            question: String(m.question).trim(),
+            options: m.options.map((o) => String(o).trim()),
+            correct: Number.isInteger(m.correct) && m.correct >= 0 && m.correct <= 3 ? m.correct : 0,
+            explanation: m.explanation ? String(m.explanation).trim() : "",
+            answer_source: m.answer_source === "text" ? "text" : "ai",
+            include: true,
+          }));
+      }
 
-      if (cleaned.length === 0) {
+      const combined = [...fromText, ...fromAi];
+
+      if (combined.length === 0) {
         setBulkError("No MCQs could be extracted from this PDF. Please check the file and try again.");
         setBulkStatus("error");
         return;
       }
 
-      setBulkResults(cleaned);
+      setBulkSummary(
+        blocks.length > 0
+          ? `${fromText.length} question(s) parsed directly from the PDF text (no AI used) · ${fromAi.length} question(s) needed AI help`
+          : `This PDF didn't match the "Q1) / A) B) C) D) / Answer: / Explanation:" format, so all ${fromAi.length} question(s) were parsed with AI`
+      );
+      setBulkResults(combined);
       setBulkStatus("done");
       setBulkProgressText("");
     } catch (e) {
@@ -1342,6 +1476,7 @@ function AdminPanel({ bank, setBank, onExit }) {
     setBank(next);
     await saveBank(next);
     setBulkResults([]);
+    setBulkSummary("");
     setBulkStatus("idle");
     setBulkFile(null);
     alert(`${toAdd.length} question(s) added to the bank.`);
@@ -1772,6 +1907,14 @@ function AdminPanel({ bank, setBank, onExit }) {
 
             {bulkResults.length > 0 && (
               <div>
+                {bulkSummary && (
+                  <div
+                    className="p-3 text-sm mb-3"
+                    style={{ background: T.emeraldSoft, color: T.emerald, fontFamily: "'IBM Plex Mono', monospace" }}
+                  >
+                    {bulkSummary}
+                  </div>
+                )}
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-sm" style={{ color: T.inkSoft }}>
                     {bulkResults.length} question(s) found — {bulkResults.filter((m) => m.include).length} selected. Review, then save.
