@@ -5,11 +5,13 @@ import {
   ClipboardList, GraduationCap, ShieldCheck, ArrowLeft, Save, LogOut,
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
-  Home as HomeIcon, Library, Users, FlaskRound, Award, Mail
+  Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
+  BellRing, ChevronDown,
 } from "lucide-react";
 import {
   loadSharedData, saveSharedData, loadLocalStats, saveLocalStats,
   signUp, signIn, signOut, getSession, onAuthChange, loadUserStats, saveUserStats,
+  loadNotes, saveNotes, loadNotifications, saveNotifications,
 } from "./supabase.js";
 
 // ---------- Design tokens ----------
@@ -69,6 +71,9 @@ const PROGRAMS = [
     ],
   },
 ];
+
+// Course options offered at signup — keys match PROGRAMS keys above.
+const COURSES = PROGRAMS.map((p) => ({ key: p.key, label: p.label }));
 
 // Programs that use the same fixed Subject -> Topic folder structure as MDCAT
 const TOPIC_PROGRAMS = ["MDCAT", "KMUCAT"];
@@ -402,15 +407,370 @@ function ComingSoon({ title }) {
   );
 }
 
+// ---------- Notes: browse by program -> subject -> note ----------
+function NotesFlow({ notesBank, programs, onExit }) {
+  // step: "program" (only shown if the student has more than one visible program) -> "subject" -> "note"
+  const [prog, setProg] = useState(programs.length === 1 ? programs[0].key : null);
+  const [subject, setSubject] = useState(null);
+  const [noteId, setNoteId] = useState(null);
+
+  const notesForProg = (notesBank || []).filter((n) => n.program === prog);
+  const subjects = useMemo(() => {
+    const map = {};
+    notesForProg.forEach((n) => { map[n.subject] = (map[n.subject] || 0) + 1; });
+    return Object.keys(map).sort().map((name) => ({ name, count: map[name] }));
+  }, [notesForProg]);
+
+  if (!prog) {
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-5xl mx-auto px-6 py-10">
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Notes</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {programs.map((p) => {
+              const Icon = p.icon;
+              const n = (notesBank || []).filter((nt) => nt.program === p.key).length;
+              return (
+                <button
+                  key={p.key}
+                  disabled={n === 0}
+                  onClick={() => setProg(p.key)}
+                  className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <Icon size={22} />
+                  <div>
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
+                    <div className="text-xs" style={{ color: T.inkSoft }}>{n} note{n === 1 ? "" : "s"}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (noteId) {
+    const note = notesForProg.find((n) => n.id === noteId);
+    if (!note) { setNoteId(null); return null; }
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-2xl mx-auto px-6 py-10">
+          <button onClick={() => setNoteId(null)} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to notes
+          </button>
+          <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+            {note.program} · {note.subject}
+          </div>
+          <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">{note.title}</h1>
+          <div className="text-sm whitespace-pre-wrap leading-relaxed" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+            {note.content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (subject) {
+    const list = notesForProg.filter((n) => n.subject === subject);
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-2xl mx-auto px-6 py-10">
+          <button onClick={() => setSubject(null)} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to subjects
+          </button>
+          <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">{subject}</h1>
+          {list.length === 0 ? (
+            <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>No notes here yet.</div>
+          ) : (
+            <div className="space-y-3">
+              {list.map((n) => (
+                <button
+                  key={n.id}
+                  onClick={() => setNoteId(n.id)}
+                  className="w-full text-left p-4 flex items-center gap-3"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <StickyNote size={18} style={{ color: T.amber }} />
+                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{n.title}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        {programs.length > 1 && (
+          <button onClick={() => setProg(null)} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to programs
+          </button>
+        )}
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Notes — {prog}</h1>
+        {subjects.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No notes have been added for this program yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {subjects.map((s) => {
+              const Icon = subjectIcon(s.name);
+              return (
+                <button
+                  key={s.name}
+                  onClick={() => setSubject(s.name)}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, background: colorForName(s.name), borderRadius: "50%" }}
+                  >
+                    <Icon size={22} style={{ color: "#fff" }} />
+                  </div>
+                  <div>
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">{s.name}</span>
+                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>{s.count} note{s.count === 1 ? "" : "s"}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Search overlay: live search across the question bank + notes ----------
+function SearchOverlay({ bank, notesBank, onClose }) {
+  const [q, setQ] = useState("");
+  const [openQuestion, setOpenQuestion] = useState(null);
+  const [openNote, setOpenNote] = useState(null);
+  const query = q.trim().toLowerCase();
+
+  const matchedQuestions = useMemo(() => {
+    if (query.length < 2) return [];
+    return bank
+      .filter(
+        (item) =>
+          item.question.toLowerCase().includes(query) ||
+          (item.subject || "").toLowerCase().includes(query) ||
+          (item.topic || "").toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+  }, [bank, query]);
+
+  const matchedNotes = useMemo(() => {
+    if (query.length < 2) return [];
+    return (notesBank || [])
+      .filter(
+        (n) =>
+          n.title.toLowerCase().includes(query) ||
+          (n.subject || "").toLowerCase().includes(query) ||
+          (n.content || "").toLowerCase().includes(query)
+      )
+      .slice(0, 25);
+  }, [notesBank, query]);
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="flex items-center gap-2 flex-1 px-3 py-3" style={{ border: `1px solid ${T.line}`, background: T.card }}>
+            <Search size={16} style={{ color: T.inkSoft }} />
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search questions, subjects, notes…"
+              className="w-full outline-none text-sm"
+              style={{ background: "transparent", color: T.ink }}
+            />
+          </div>
+          <button onClick={onClose} className="p-3" style={{ border: `1px solid ${T.ink}` }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        {query.length < 2 && (
+          <p className="text-sm" style={{ color: T.inkSoft }}>Type at least 2 characters to search.</p>
+        )}
+
+        {openQuestion && (
+          <div className="mb-6 p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs tracking-widest uppercase" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+                {openQuestion.program} · {openQuestion.subject} {openQuestion.topic ? `· ${openQuestion.topic}` : ""}
+              </div>
+              <button onClick={() => setOpenQuestion(null)}><X size={14} /></button>
+            </div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="mb-3">{openQuestion.question}</div>
+            <div className="space-y-2">
+              {openQuestion.options.map((opt, i) => (
+                <div
+                  key={i}
+                  className="text-sm px-3 py-2"
+                  style={{
+                    border: `1px solid ${i === openQuestion.correct ? T.emerald : T.line}`,
+                    color: i === openQuestion.correct ? T.emerald : T.ink,
+                  }}
+                >
+                  {["A", "B", "C", "D"][i]}. {opt}
+                </div>
+              ))}
+            </div>
+            {openQuestion.explanation && (
+              <div className="mt-3 text-sm p-3" style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}>
+                {openQuestion.explanation}
+              </div>
+            )}
+          </div>
+        )}
+
+        {openNote && (
+          <div className="mb-6 p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs tracking-widest uppercase" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+                {openNote.program} · {openNote.subject}
+              </div>
+              <button onClick={() => setOpenNote(null)}><X size={14} /></button>
+            </div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="mb-3 text-lg">{openNote.title}</div>
+            <div className="text-sm whitespace-pre-wrap">{openNote.content}</div>
+          </div>
+        )}
+
+        {matchedNotes.length > 0 && (
+          <div className="mb-6">
+            <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+              Notes ({matchedNotes.length})
+            </div>
+            <div className="space-y-2">
+              {matchedNotes.map((n) => (
+                <button
+                  key={n.id}
+                  onClick={() => { setOpenNote(n); setOpenQuestion(null); }}
+                  className="w-full text-left p-3 flex items-center gap-3"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <StickyNote size={16} style={{ color: T.amber }} />
+                  <div>
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-sm">{n.title}</div>
+                    <div className="text-xs" style={{ color: T.inkSoft }}>{n.program} · {n.subject}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {matchedQuestions.length > 0 && (
+          <div>
+            <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+              Questions ({matchedQuestions.length})
+            </div>
+            <div className="space-y-2">
+              {matchedQuestions.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => { setOpenQuestion(item); setOpenNote(null); }}
+                  className="w-full text-left p-3"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div className="text-xs mb-1" style={{ color: T.inkSoft }}>{item.program} · {item.subject} {item.topic ? `· ${item.topic}` : ""}</div>
+                  <div className="text-sm">{item.question}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {query.length >= 2 && matchedQuestions.length === 0 && matchedNotes.length === 0 && (
+          <p className="text-sm" style={{ color: T.inkSoft }}>No results for "{q}".</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Notifications overlay ----------
+function NotificationsOverlay({ notifications, onClose }) {
+  const sorted = [...(notifications || [])].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl flex items-center gap-2">
+            <BellRing size={20} /> Notifications
+          </h2>
+          <button onClick={onClose} className="p-3" style={{ border: `1px solid ${T.ink}` }}>
+            <X size={16} />
+          </button>
+        </div>
+        {sorted.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No notifications yet.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {sorted.map((n) => (
+              <div key={n.id} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                <div className="flex items-center justify-between mb-1">
+                  <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{n.title}</div>
+                  {n.createdAt && (
+                    <div className="text-xs shrink-0" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      {new Date(n.createdAt).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+                <div className="text-sm" style={{ color: T.inkSoft }}>{n.message}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Home: dashboard ----------
-function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved }) {
+function Home({
+  bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
+  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved,
+  notesBank, notifications,
+}) {
   const [navTab, setNavTab] = useState("home");
-  const total = bank.length;
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const total = bank.filter((q) => programs.some((p) => p.key === q.program)).length;
   const counts = useMemo(() => {
     const c = {};
-    PROGRAMS.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key).length));
+    programs.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key).length));
     return c;
-  }, [bank]);
+  }, [bank, programs]);
+
+  const [seenNotifCount, setSeenNotifCount] = useState(() => {
+    try { return Number(localStorage.getItem("mdcat-notif-seen") || 0); } catch { return 0; }
+  });
+  const unseenNotifs = Math.max(0, (notifications?.length || 0) - seenNotifCount);
+  const openNotifPanel = () => {
+    setNotifOpen(true);
+    setSeenNotifCount(notifications?.length || 0);
+    try { localStorage.setItem("mdcat-notif-seen", String(notifications?.length || 0)); } catch {}
+  };
 
   const topicsCompleted = stats ? Object.keys(stats.bySubject || {}).length : 0;
   const attempted = stats?.totalAttempted || 0;
@@ -429,11 +789,18 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
 
   const pastPaperCounts = useMemo(() => {
     const c = {};
-    PROGRAMS.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key && /past/i.test(q.source || "")).length));
+    programs.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key && /past/i.test(q.source || "")).length));
     return c;
-  }, [bank]);
+  }, [bank, programs]);
 
-  if (navTab === "notes") return <><ComingSoon title="Notes" /><BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} /></>;
+  if (navTab === "notes") {
+    return (
+      <>
+        <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
   if (navTab === "pastpapers") {
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
@@ -441,7 +808,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
         <div className="max-w-5xl mx-auto px-6 py-10">
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Past Papers</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {PROGRAMS.map((p) => {
+            {programs.map((p) => {
               const Icon = p.icon;
               const n = pastPaperCounts[p.key] || 0;
               return (
@@ -474,7 +841,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-2">Mock Exam</h2>
           <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Pick a program, then choose "Timed Mock Exam" before you start.</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {PROGRAMS.map((p) => {
+            {programs.map((p) => {
               const Icon = p.icon;
               const n = counts[p.key] || 0;
               return (
@@ -504,8 +871,16 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
         <div className="max-w-md mx-auto px-6 py-10">
-          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Profile</h2>
-          <p className="text-sm mb-6" style={{ color: T.inkSoft }}>{userEmail}</p>
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">
+            {userName || "Profile"}
+          </h2>
+          <p className="text-sm mb-1" style={{ color: T.inkSoft }}>{userEmail}</p>
+          {userCourse && (
+            <p className="text-xs mb-6 inline-flex px-2 py-1" style={{ color: T.blue, background: T.blueSoft, borderRadius: 6 }}>
+              {userCourse} student
+            </p>
+          )}
+          {!userCourse && <div className="mb-6" />}
           <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
@@ -552,9 +927,19 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
               <Menu size={22} color="#fff" />
             </button>
             <div className="flex items-center gap-4">
-              <Search size={20} color="#fff" />
-              <button onClick={() => soon("Notifications")} className="relative">
+              <button onClick={() => setSearchOpen(true)}>
+                <Search size={20} color="#fff" />
+              </button>
+              <button onClick={openNotifPanel} className="relative">
                 <Bell size={20} color="#fff" />
+                {unseenNotifs > 0 && (
+                  <span
+                    className="absolute -top-1.5 -right-1.5 flex items-center justify-center text-[10px]"
+                    style={{ width: 16, height: 16, borderRadius: "50%", background: T.rose, color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+                  >
+                    {unseenNotifs > 9 ? "9+" : unseenNotifs}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setNavTab("profile")}
@@ -565,15 +950,26 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
               </button>
             </div>
           </div>
-          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>{greeting}, Future Doctor 👋</div>
+          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>{greeting}{userName ? `, ${userName}` : ", Future Doctor"} 👋</div>
           <h1 className="text-3xl sm:text-4xl mb-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#fff" }}>
             Focus Today, <span style={{ color: "#6FA3F5" }}>Heal Tomorrow.</span>
           </h1>
           <p className="text-sm" style={{ color: "#B9C4DE" }}>
-            Your all-in-one platform for MDCAT, KMU CAT, BSN &amp; MBBS success.
+            {userCourse ? `Your dedicated prep space for ${userCourse}.` : "Your all-in-one platform for MDCAT, KMU CAT, BSN & MBBS success."}
           </p>
         </div>
       </div>
+
+      {searchOpen && (
+        <SearchOverlay
+          bank={bank.filter((q) => programs.some((p) => p.key === q.program))}
+          notesBank={(notesBank || []).filter((n) => programs.some((p) => p.key === n.program))}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
+      {notifOpen && (
+        <NotificationsOverlay notifications={notifications || []} onClose={() => setNotifOpen(false)} />
+      )}
 
       <main className="max-w-5xl mx-auto px-6 -mt-4">
         {/* Choose Your Program */}
@@ -582,7 +978,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
           style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}
         >
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg">
-            Choose Your Program
+            {programs.length === 1 ? "Your Program" : "Choose Your Program"}
           </h2>
           <span className="text-sm" style={{ color: T.inkSoft }}>
             {total} question{total === 1 ? "" : "s"} in bank
@@ -590,7 +986,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
-          {PROGRAMS.map((p) => {
+          {programs.map((p) => {
             const Icon = p.icon;
             const n = counts[p.key] || 0;
             return (
@@ -1329,8 +1725,11 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
 // ---------- Student Auth (Sign up / Log in) ----------
 function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [course, setCourse] = useState("");
+  const [courseOpen, setCourseOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1350,9 +1749,17 @@ function AuthScreen({ onAuthed }) {
       setError("Password must be at least 6 characters.");
       return;
     }
+    if (mode === "signup" && !name.trim()) {
+      setError("Please enter your name.");
+      return;
+    }
+    if (mode === "signup" && !course) {
+      setError("Please select your course.");
+      return;
+    }
     setBusy(true);
     if (mode === "signup") {
-      const { data, error: err } = await signUp(email.trim(), password);
+      const { data, error: err } = await signUp(email.trim(), password, { name: name.trim(), course });
       setBusy(false);
       if (err) {
         setError(err.message);
@@ -1413,6 +1820,28 @@ function AuthScreen({ onAuthed }) {
           {isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
         </p>
 
+        {!isLogin && (
+          <div className="mb-3">
+            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+              Name
+            </label>
+            <div
+              className="flex items-center gap-2 px-3"
+              style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+            >
+              <User size={14} color={accent} />
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your full name"
+                className="w-full py-3 outline-none"
+                style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mb-3">
           <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
             Email
@@ -1453,6 +1882,47 @@ function AuthScreen({ onAuthed }) {
             />
           </div>
         </div>
+
+        {!isLogin && (
+          <div className="mb-2 relative">
+            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+              Course
+            </label>
+            <button
+              type="button"
+              onClick={() => setCourseOpen((o) => !o)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-3"
+              style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+            >
+              <span className="flex items-center gap-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: course ? "#fff" : "#8FA0C4" }}>
+                <GraduationCap size={14} color={accent} />
+                {course ? COURSES.find((c) => c.key === course)?.label : "Select your course…"}
+              </span>
+              <ChevronDown size={16} color="#8FA0C4" />
+            </button>
+            {courseOpen && (
+              <div
+                className="absolute left-0 right-0 mt-1 z-10"
+                style={{ background: "#0F2748", border: `1px solid rgba(255,255,255,0.2)` }}
+              >
+                {COURSES.map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    onClick={() => { setCourse(c.key); setCourseOpen(false); }}
+                    className="w-full text-left px-3 py-3 text-sm"
+                    style={{ color: course === c.key ? accent : "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-xs mt-1" style={{ color: "#8FA0C4" }}>
+              You'll only see content for the course you pick — MDCAT, KMU CAT, BSN, or MBBS.
+            </p>
+          </div>
+        )}
 
         {error && <div className="text-sm mt-2" style={{ color: "#F5A3A3" }}>{error}</div>}
         {notice && <div className="text-sm mt-2" style={{ color: "#7FE0B8" }}>{notice}</div>}
@@ -1527,7 +1997,10 @@ function AdminGate({ onUnlock, onBack }) {
   );
 }
 
-function AdminPanel({ bank, setBank, onExit }) {
+const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", content: "" };
+const EMPTY_NOTIF_FORM = { title: "", message: "" };
+
+function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, onExit }) {
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -1535,6 +2008,49 @@ function AdminPanel({ bank, setBank, onExit }) {
   const [search, setSearch] = useState("");
   const [newPass, setNewPass] = useState("");
   const [passMsg, setPassMsg] = useState("");
+
+  const [noteForm, setNoteForm] = useState(EMPTY_NOTE_FORM);
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [notifForm, setNotifForm] = useState(EMPTY_NOTIF_FORM);
+
+  const saveNoteForm = async () => {
+    if (!noteForm.subject.trim() || !noteForm.title.trim() || !noteForm.content.trim()) {
+      alert("Please fill in subject, title, and content.");
+      return;
+    }
+    let next;
+    if (editingNoteId) {
+      next = notesBank.map((n) => (n.id === editingNoteId ? { ...noteForm, id: editingNoteId } : n));
+    } else {
+      next = [...notesBank, { ...noteForm, id: uid() }];
+    }
+    setNotesBank(next);
+    await saveNotes(next);
+    setNoteForm(EMPTY_NOTE_FORM);
+    setEditingNoteId(null);
+  };
+  const startEditNote = (n) => { setNoteForm({ ...n }); setEditingNoteId(n.id); };
+  const removeNote = async (id) => {
+    const next = notesBank.filter((n) => n.id !== id);
+    setNotesBank(next);
+    await saveNotes(next);
+  };
+
+  const addNotification = async () => {
+    if (!notifForm.title.trim() || !notifForm.message.trim()) {
+      alert("Please fill in a title and message.");
+      return;
+    }
+    const next = [...notifications, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
+    setNotifications(next);
+    await saveNotifications(next);
+    setNotifForm(EMPTY_NOTIF_FORM);
+  };
+  const removeNotification = async (id) => {
+    const next = notifications.filter((n) => n.id !== id);
+    setNotifications(next);
+    await saveNotifications(next);
+  };
 
   const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
   const [bulkFile, setBulkFile] = useState(null);
@@ -1736,6 +2252,8 @@ function AdminPanel({ bank, setBank, onExit }) {
             { k: "list", label: "All questions" },
             { k: "form", label: editingId ? "Edit question" : "Add question" },
             { k: "bulk", label: "Bulk Upload (PDF)" },
+            { k: "notes", label: "Notes" },
+            { k: "notifications", label: "Notifications" },
             { k: "settings", label: "Settings" },
           ].map((t) => (
             <button
@@ -2174,6 +2692,164 @@ function AdminPanel({ bank, setBank, onExit }) {
           </div>
         )}
 
+        {tab === "notes" && (
+          <div className="max-w-3xl">
+            <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-4">
+              {editingNoteId ? "Edit note" : "Add a note"}
+            </h2>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Program</label>
+                <select
+                  value={noteForm.program}
+                  onChange={(e) => setNoteForm({ ...noteForm, program: e.target.value, subject: "" })}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
+                >
+                  {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
+                {TOPIC_PROGRAMS.includes(noteForm.program) ? (
+                  <select
+                    value={noteForm.subject}
+                    onChange={(e) => setNoteForm({ ...noteForm, subject: e.target.value })}
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
+                  >
+                    <option value="">Select subject…</option>
+                    {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    value={noteForm.subject}
+                    onChange={(e) => setNoteForm({ ...noteForm, subject: e.target.value })}
+                    placeholder="e.g. Anatomy"
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Title</label>
+              <input
+                value={noteForm.title}
+                onChange={(e) => setNoteForm({ ...noteForm, title: e.target.value })}
+                placeholder="e.g. Cell Structure — quick revision"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              />
+            </div>
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Content</label>
+              <textarea
+                value={noteForm.content}
+                onChange={(e) => setNoteForm({ ...noteForm, content: e.target.value })}
+                rows={8}
+                placeholder="Write or paste the note content here…"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              />
+            </div>
+            <div className="flex gap-3 mb-8">
+              <button onClick={saveNoteForm} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
+                <Save size={16} /> {editingNoteId ? "Save changes" : "Add note"}
+              </button>
+              {editingNoteId && (
+                <button
+                  onClick={() => { setNoteForm(EMPTY_NOTE_FORM); setEditingNoteId(null); }}
+                  className="px-5 py-2 text-sm"
+                  style={{ border: `1px solid ${T.ink}` }}
+                >
+                  Cancel edit
+                </button>
+              )}
+            </div>
+
+            <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-3">
+              All notes ({notesBank.length})
+            </h3>
+            <div className="space-y-2">
+              {notesBank.map((n) => (
+                <div key={n.id} className="p-4 flex items-start justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <div>
+                    <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+                      {n.program} · {n.subject}
+                    </div>
+                    <div style={{ fontFamily: "'Source Serif 4', serif" }}>{n.title}</div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button onClick={() => startEditNote(n)} className="p-2" style={{ border: `1px solid ${T.ink}` }}><Pencil size={14} /></button>
+                    <button onClick={() => removeNote(n.id)} className="p-2" style={{ border: `1px solid ${T.rose}`, color: T.rose }}><Trash2 size={14} /></button>
+                  </div>
+                </div>
+              ))}
+              {notesBank.length === 0 && (
+                <div className="p-6 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+                  No notes added yet.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "notifications" && (
+          <div className="max-w-2xl">
+            <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-4">Send a notification</h2>
+            <p className="text-sm mb-4" style={{ color: T.inkSoft }}>
+              Notifications go out to every student, regardless of which course they picked at signup.
+            </p>
+            <div className="mb-3">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Title</label>
+              <input
+                value={notifForm.title}
+                onChange={(e) => setNotifForm({ ...notifForm, title: e.target.value })}
+                placeholder="e.g. New Past Papers added"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              />
+            </div>
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Message</label>
+              <textarea
+                value={notifForm.message}
+                onChange={(e) => setNotifForm({ ...notifForm, message: e.target.value })}
+                rows={3}
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              />
+            </div>
+            <button onClick={addNotification} className="flex items-center gap-2 px-5 py-2 text-sm mb-8" style={{ background: T.ink, color: T.paper }}>
+              <Plus size={16} /> Send notification
+            </button>
+
+            <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-3">
+              Sent notifications ({notifications.length})
+            </h3>
+            <div className="space-y-2">
+              {[...notifications].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map((n) => (
+                <div key={n.id} className="p-4 flex items-start justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <div>
+                    <div className="text-xs mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                      {n.createdAt ? new Date(n.createdAt).toLocaleString() : ""}
+                    </div>
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{n.title}</div>
+                    <div className="text-sm" style={{ color: T.inkSoft }}>{n.message}</div>
+                  </div>
+                  <button onClick={() => removeNotification(n.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}><Trash2 size={14} /></button>
+                </div>
+              ))}
+              {notifications.length === 0 && (
+                <div className="p-6 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+                  No notifications sent yet.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {tab === "settings" && (
           <div className="max-w-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -2201,6 +2877,8 @@ function AdminPanel({ bank, setBank, onExit }) {
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [bank, setBank] = useState([]);
+  const [notesBank, setNotesBank] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [stats, setStats] = useState(null);
   const [view, setView] = useState("home");
   const [program, setProgram] = useState(null);
@@ -2237,6 +2915,9 @@ export default function App() {
         await saveBank(b);
       }
       setBank(b);
+      const [n, notifs] = await Promise.all([loadNotes(), loadNotifications()]);
+      setNotesBank(n);
+      setNotifications(notifs);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], streak: 0, lastChallengeDate: null };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -2248,7 +2929,15 @@ export default function App() {
     })();
   }, [user, isAdminURL]);
 
-  const openProgram = (p) => { setProgram(p); setYear(null); setBlock(null); setTopic(null); setView("program"); };
+  // Each student only sees the course they picked at signup. Accounts created before
+  // this feature (or the ?admin= entry point) have no course set, so they still see all programs.
+  const userCourse = !isAdminURL ? user?.user_metadata?.course || null : null;
+  const visiblePrograms = userCourse ? PROGRAMS.filter((p) => p.key === userCourse) : PROGRAMS;
+
+  const openProgram = (p) => {
+    if (userCourse && p !== userCourse) return; // defensive: students can't jump into another course
+    setProgram(p); setYear(null); setBlock(null); setTopic(null); setView("program");
+  };
   const openYear = (y) => { setYear(y); setBlock(null); setView("year"); };
   const openBlock = (b) => { setBlock(b); setView("block"); };
   const openSubject = (s) => {
@@ -2391,15 +3080,20 @@ export default function App() {
     return (
       <Home
         bank={bank}
+        programs={visiblePrograms}
         onOpenProgram={openProgram}
         onOpenAdmin={() => setView("admin-gate")}
         stats={stats}
         showAdminEntry={isAdminURL}
         userEmail={user?.email || ""}
+        userName={user?.user_metadata?.name || ""}
+        userCourse={userCourse}
         onSignOut={handleSignOut}
         onDailyChallenge={openDailyChallenge}
         onReviewMistakes={openReviewMistakes}
         onOpenSaved={openSaved}
+        notesBank={notesBank}
+        notifications={notifications}
       />
     );
   }
@@ -2407,7 +3101,17 @@ export default function App() {
     return <AdminGate onUnlock={() => setView("admin")} onBack={() => setView("home")} />;
   }
   if (view === "admin") {
-    return <AdminPanel bank={bank} setBank={setBank} onExit={() => setView("home")} />;
+    return (
+      <AdminPanel
+        bank={bank}
+        setBank={setBank}
+        notesBank={notesBank}
+        setNotesBank={setNotesBank}
+        notifications={notifications}
+        setNotifications={setNotifications}
+        onExit={() => setView("home")}
+      />
+    );
   }
   if (view === "program") {
     return (

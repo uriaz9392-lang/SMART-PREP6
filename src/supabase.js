@@ -51,8 +51,15 @@ export function saveLocalStats(stats) {
 }
 
 // ---- Authentication ----
-export async function signUp(email, password) {
-  return supabase.auth.signUp({ email, password });
+// extra = { name, course } gets saved on the auth user as user_metadata,
+// so user.user_metadata.name / user.user_metadata.course are available
+// right after sign up / sign in, with no extra database table needed.
+export async function signUp(email, password, extra = {}) {
+  return supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { name: extra.name || "", course: extra.course || "" } },
+  });
 }
 export async function signIn(email, password) {
   return supabase.auth.signInWithPassword({ email, password });
@@ -67,6 +74,48 @@ export async function getSession() {
 export function onAuthChange(callback) {
   const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
   return data.subscription;
+}
+
+// ---- Notes (shared, admin-authored) ----
+// Requires a `notes` jsonb column on the `app_data` table (default value []).
+export async function loadNotes() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("notes").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.notes) || [];
+  } catch (e) {
+    console.error("Load notes failed (add a 'notes' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveNotes(notes) {
+  try {
+    const { error } = await supabase.from("app_data").update({ notes }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save notes failed (add a 'notes' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Notifications (shared, admin-authored) ----
+// Requires a `notifications` jsonb column on the `app_data` table (default value []).
+export async function loadNotifications() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("notifications").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.notifications) || [];
+  } catch (e) {
+    console.error("Load notifications failed (add a 'notifications' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveNotifications(notifications) {
+  try {
+    const { error } = await supabase.from("app_data").update({ notifications }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save notifications failed (add a 'notifications' jsonb column to app_data):", e);
+  }
 }
 
 // ---- Per-user stats (each student's own score, tied to their account) ----
