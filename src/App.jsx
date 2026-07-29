@@ -2383,7 +2383,8 @@ function AdminGate({ onUnlock, onBack }) {
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin sign-in</h1>
         </div>
         <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-          Default passcode is <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{DEFAULT_PASSCODE}</code> — change it after signing in.
+          Enter the admin passcode. This screen is only a second check — you must
+          already be signed in with the designated admin account for changes to save.
         </p>
         <input
           type="password"
@@ -3313,7 +3314,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAdminURL && !user) return;
+    if (!user) return;
     (async () => {
       let b = await loadBank();
       if (!b) {
@@ -3334,7 +3335,7 @@ export default function App() {
       }
       setLoading(false);
     })();
-  }, [user, isAdminURL]);
+  }, [user]);
 
   // Each student only sees the course they picked at signup. Accounts created before
   // this feature (or the ?admin= entry point) have no course set, so they still see all programs.
@@ -3487,7 +3488,7 @@ export default function App() {
     );
   }
 
-  if (!isAdminURL && !user) {
+  if (!user) {
     return <AuthScreen onAuthed={(session) => setUser(session.user)} />;
   }
 
