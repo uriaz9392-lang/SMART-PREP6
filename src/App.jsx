@@ -14,17 +14,20 @@ import {
 
 // ---------- Design tokens ----------
 const T = {
-  paper: "#EFEEE4",
-  paperDark: "#E4E1D2",
-  ink: "#1C2B3A",
-  inkSoft: "#4A5A68",
-  line: "#CEC9B6",
+  paper: "#0B1E3D",
+  paperDark: "#0F2748",
+  card: "#12294D",
+  ink: "#EAF1FB",
+  inkSoft: "#93A9CC",
+  line: "#26406B",
   emerald: "#1F7A5C",
   emeraldSoft: "#DCEBE3",
   rose: "#B8493F",
   roseSoft: "#F3E1DD",
   amber: "#B5822A",
   amberSoft: "#F1E4CB",
+  blue: "#2E63D6",
+  blueSoft: "#DCE6FA",
 };
 
 // ---------- Programs ----------
@@ -33,17 +36,26 @@ const PROGRAMS = [
     key: "MDCAT", label: "MDCAT", icon: Target, tagline: "Your Journey Starts Here",
     gradient: "linear-gradient(135deg, #0F2A5C, #1B3F7A)",
     links: [
-      { label: "Practice Questions", icon: ClipboardCheck, action: "open" },
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "Mock Tests", icon: FileText, action: "open" },
+      { label: "Mock Exam", icon: FileText, action: "open" },
+    ],
+  },
+  {
+    key: "KMUCAT", label: "KMU CAT", icon: Award, tagline: "Your Journey Starts Here",
+    gradient: "linear-gradient(135deg, #4A2E7A, #6C3FA3)",
+    links: [
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
+      { label: "Notes", icon: BookOpen, action: "soon" },
+      { label: "Mock Exam", icon: FileText, action: "open" },
     ],
   },
   {
     key: "BSN", label: "BSN", icon: HeartPulse, tagline: "Compassion in Every Step",
     gradient: "linear-gradient(135deg, #0E4A45, #16665F)",
     links: [
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "MCQs", icon: ClipboardCheck, action: "open" },
       { label: "Past Papers", icon: FileText, action: "open" },
     ],
   },
@@ -51,12 +63,15 @@ const PROGRAMS = [
     key: "MBBS", label: "MBBS", icon: Stethoscope, tagline: "Learn. Understand. Serve.",
     gradient: "linear-gradient(135deg, #0F2A5C, #1B3F7A)",
     links: [
-      { label: "Subjects", icon: Library, action: "open" },
-      { label: "MCQs", icon: ClipboardCheck, action: "open" },
+      { label: "Semester", icon: Library, action: "open" },
+      { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Clinical Cases", icon: FlaskRound, action: "soon" },
     ],
   },
 ];
+
+// Programs that use the same fixed Subject -> Topic folder structure as MDCAT
+const TOPIC_PROGRAMS = ["MDCAT", "KMUCAT"];
 
 const SUBJECT_ICONS = {
   Biology: Dna,
@@ -66,6 +81,24 @@ const SUBJECT_ICONS = {
 };
 function subjectIcon(name) {
   return SUBJECT_ICONS[name] || ClipboardList;
+}
+
+// ---------- Folder colors (subjects/topics/blocks/years) ----------
+const SUBJECT_COLORS = {
+  Biology: "#1F9D6B",
+  Chemistry: "#7C5CD6",
+  Physics: "#2E7FE0",
+  English: "#E0812E",
+};
+const FOLDER_PALETTE = [
+  "#1F9D6B", "#7C5CD6", "#2E7FE0", "#E0812E", "#D6455C",
+  "#2EA8A0", "#C2437A", "#4CAF50", "#CBA92E", "#6C63D6",
+];
+function colorForName(name = "") {
+  if (SUBJECT_COLORS[name]) return SUBJECT_COLORS[name];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return FOLDER_PALETTE[hash % FOLDER_PALETTE.length];
 }
 
 const DEFAULT_PASSCODE = "mdcat2026";
@@ -273,10 +306,6 @@ function parseQuestionBlock(block) {
   return { complete, question: questionText, options, correct, explanation, rawBlock: block };
 }
 
-// Groups an array of raw text blocks into fewer, larger batches (under maxChars each)
-// so incomplete questions can still be sent to the AI in as few requests as possible.
-
-
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -303,9 +332,9 @@ function Bubble({ letter, state, onClick, disabled }) {
     style.color = T.inkSoft;
     style.background = "transparent";
   } else if (state === "selected") {
-    style.borderColor = T.ink;
-    style.background = T.ink;
-    style.color = T.paper;
+    style.borderColor = T.blue;
+    style.background = T.blue;
+    style.color = "#fff";
   } else if (state === "correct" || state === "reveal-correct") {
     style.borderColor = T.emerald;
     style.background = T.emerald;
@@ -334,7 +363,7 @@ function BottomNav({ tab, setTab }) {
   return (
     <div
       className="fixed bottom-0 left-0 right-0 flex items-center justify-around py-2 z-20"
-      style={{ background: "#fff", borderTop: `1px solid ${T.line}` }}
+      style={{ background: T.card, borderTop: `1px solid ${T.line}` }}
     >
       {items.map((it) => {
         const Icon = it.icon;
@@ -344,7 +373,7 @@ function BottomNav({ tab, setTab }) {
             key={it.key}
             onClick={() => setTab(it.key)}
             className="flex flex-col items-center gap-1 px-3 py-1"
-            style={{ color: active ? "#1B3F7A" : T.inkSoft }}
+            style={{ color: active ? "#6FA3F5" : T.inkSoft }}
           >
             <Icon size={20} />
             <span className="text-[11px]" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>{it.label}</span>
@@ -387,6 +416,15 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
   const attempted = stats?.totalAttempted || 0;
   const accuracy = attempted > 0 ? Math.round((stats.totalCorrect / attempted) * 100) : 0;
 
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    if (h < 5) return "Good Night";
+    if (h < 12) return "Good Morning";
+    if (h < 17) return "Good Afternoon";
+    if (h < 21) return "Good Evening";
+    return "Good Night";
+  }, []);
+
   const soon = (label) => alert(`${label} is coming soon.`);
 
   if (navTab === "library") return <><ComingSoon title="Library" /><BottomNav tab={navTab} setTab={setNavTab} /></>;
@@ -407,7 +445,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
                   disabled={n === 0}
                   onClick={() => onOpenProgram(p.key)}
                   className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <Icon size={22} />
                   <div>
@@ -430,15 +468,15 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
         <div className="max-w-md mx-auto px-6 py-10">
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Profile</h2>
           <p className="text-sm mb-6" style={{ color: T.inkSoft }}>{userEmail}</p>
-          <div className="p-5 mb-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
           </div>
-          <div className="p-5 mb-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
           </div>
-          <div className="p-5 mb-6" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
           </div>
@@ -487,19 +525,22 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
               </button>
             </div>
           </div>
-          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>Good Morning, Future Doctor 👋</div>
+          <div className="text-sm mb-1" style={{ color: "#B9C4DE" }}>{greeting}, Future Doctor 👋</div>
           <h1 className="text-3xl sm:text-4xl mb-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#fff" }}>
             Focus Today, <span style={{ color: "#6FA3F5" }}>Heal Tomorrow.</span>
           </h1>
           <p className="text-sm" style={{ color: "#B9C4DE" }}>
-            Your all-in-one platform for MDCAT, BSN &amp; MBBS success.
+            Your all-in-one platform for MDCAT, KMU CAT, BSN &amp; MBBS success.
           </p>
         </div>
       </div>
 
       <main className="max-w-5xl mx-auto px-6 -mt-4">
         {/* Choose Your Program */}
-        <div className="flex items-center justify-between mb-4">
+        <div
+          className="flex items-center justify-between mb-4 px-4 py-3 relative z-10"
+          style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}
+        >
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg">
             Choose Your Program
           </h2>
@@ -566,8 +607,8 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
           ].map((q) => {
             const Icon = q.icon;
             return (
-              <button key={q.label} onClick={q.action} className="p-4 text-left flex flex-col gap-2" style={{ background: "#fff", border: `1px solid ${T.line}`, borderRadius: 10 }}>
-                <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: T.paperDark }}>
+              <button key={q.label} onClick={q.action} className="p-4 text-left flex flex-col gap-2" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}>
+                <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
                   <Icon size={16} />
                 </div>
                 <div className="text-sm font-medium">{q.label}</div>
@@ -620,7 +661,7 @@ function Home({ bank, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEma
 function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
-  const isMDCAT = program === "MDCAT";
+  const isMDCAT = TOPIC_PROGRAMS.includes(program);
 
   const groups = useMemo(() => {
     if (isMBBS) {
@@ -671,13 +712,13 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
                   key={s.name}
                   onClick={() => (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))}
                   className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
                     className="flex items-center justify-center shrink-0"
-                    style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                    style={{ width: 48, height: 48, background: colorForName(s.name), borderRadius: "50%" }}
                   >
-                    <Icon size={22} style={{ color: T.ink }} />
+                    <Icon size={22} style={{ color: "#fff" }} />
                   </div>
                   <div>
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
@@ -731,13 +772,13 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
                 key={b.name}
                 onClick={() => onOpenBlock(b.name)}
                 className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
                 <div
                   className="flex items-center justify-center shrink-0"
-                  style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                  style={{ width: 48, height: 48, background: colorForName(b.name), borderRadius: "50%" }}
                 >
-                  <Library size={22} style={{ color: T.ink }} />
+                  <Library size={22} style={{ color: "#fff" }} />
                 </div>
                 <div>
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
@@ -794,13 +835,13 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
                   key={s.name}
                   onClick={() => onOpenSubject(s.name)}
                   className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
-                  style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
                     className="flex items-center justify-center shrink-0"
-                    style={{ width: 48, height: 48, border: `1px solid ${T.ink}`, borderRadius: "50%" }}
+                    style={{ width: 48, height: 48, background: colorForName(s.name), borderRadius: "50%" }}
                   >
-                    <Icon size={22} style={{ color: T.ink }} />
+                    <Icon size={22} style={{ color: "#fff" }} />
                   </div>
                   <div>
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
@@ -854,9 +895,17 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
                 key={t.name}
                 onClick={() => onOpenTopic(t.name)}
                 className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
-                style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
-                <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 36, height: 36, background: colorForName(t.name), borderRadius: "50%" }}
+                  >
+                    <ClipboardList size={16} style={{ color: "#fff" }} />
+                  </div>
+                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
+                </div>
                 <span className="text-xs shrink-0" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                   {t.count} q
                 </span>
@@ -974,12 +1023,20 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onToggleBookmark }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [showExplain, setShowExplain] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(timeLimit || 0);
   const q = questions[idx];
   const letters = ["A", "B", "C", "D"];
+  const revealed = answers[idx] !== undefined;
+  const isCorrect = revealed && answers[idx] === q.correct;
   const isBookmarked = bookmarks && q ? bookmarks.includes(q.id) : false;
 
-  const select = (i) => setAnswers((a) => ({ ...a, [idx]: i }));
+  const select = (i) => {
+    if (revealed) return;
+    setAnswers((a) => ({ ...a, [idx]: i }));
+  };
+
+  const toggleExplain = () => setShowExplain((s) => ({ ...s, [idx]: !s[idx] }));
 
   const finish = useCallback(() => {
     let correct = 0;
@@ -1043,23 +1100,74 @@ function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onTo
             </button>
           )}
         </div>
-        <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-2xl mb-8 leading-snug">
+        <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-2xl mb-6 leading-snug">
           {q.question}
         </h2>
 
-        <div className="space-y-3 mb-10">
-          {q.options.map((opt, i) => (
-            <button
-              key={i}
-              onClick={() => select(i)}
-              className="w-full flex items-center gap-4 p-3 text-left"
-              style={{ border: `1px solid ${T.line}`, background: "#fff" }}
-            >
-              <Bubble letter={letters[i]} state={answers[idx] === i ? "selected" : "idle"} onClick={() => select(i)} />
-              <span>{opt}</span>
-            </button>
-          ))}
+        {revealed && (
+          <div
+            className="flex items-center gap-2 p-3 mb-4 text-sm"
+            style={{
+              background: isCorrect ? T.emeraldSoft : T.roseSoft,
+              color: isCorrect ? T.emerald : T.rose,
+            }}
+          >
+            {isCorrect ? <Check size={16} /> : <X size={16} />}
+            <span style={{ fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600 }}>
+              {isCorrect ? "Correct!" : "Incorrect — correct answer is highlighted below."}
+            </span>
+          </div>
+        )}
+
+        <div className="space-y-3 mb-4">
+          {q.options.map((opt, i) => {
+            let state = "idle";
+            if (revealed) {
+              if (i === q.correct) state = "correct";
+              else if (i === answers[idx]) state = "incorrect";
+            } else if (answers[idx] === i) {
+              state = "selected";
+            }
+            return (
+              <button
+                key={i}
+                onClick={() => select(i)}
+                disabled={revealed}
+                className="w-full flex items-center gap-4 p-3 text-left disabled:cursor-default"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              >
+                <Bubble letter={letters[i]} state={state} disabled={revealed} onClick={() => select(i)} />
+                <span>{opt}</span>
+              </button>
+            );
+          })}
         </div>
+
+        {revealed && q.explanation && (
+          <div className="mb-8">
+            {!showExplain[idx] ? (
+              <button
+                onClick={toggleExplain}
+                className="flex items-center gap-2 text-sm px-4 py-2"
+                style={{ border: `1px solid ${T.ink}` }}
+              >
+                <BookOpen size={14} /> Show Explanation
+              </button>
+            ) : (
+              <div className="text-sm p-3" style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}>
+                <div className="flex items-center justify-between mb-1">
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-xs uppercase tracking-widest">
+                    Explanation
+                  </span>
+                  <button onClick={toggleExplain} style={{ color: "#3A2C0E" }}>
+                    <X size={14} />
+                  </button>
+                </div>
+                {q.explanation}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           <button
@@ -1120,7 +1228,7 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
             const your = answers[i];
             const isCorrect = your === q.correct;
             return (
-              <div key={i} className="p-4" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+              <div key={i} className="p-4" style={{ border: `1px solid ${T.line}`, background: T.card }}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div style={{ fontFamily: "'Source Serif 4', serif" }} className="font-semibold">
                     {i + 1}. {q.question}
@@ -1156,7 +1264,7 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
                   })}
                 </div>
                 {q.explanation && (
-                  <div className="mt-3 text-sm p-3" style={{ background: T.amberSoft, color: T.ink }}>
+                  <div className="mt-3 text-sm p-3" style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-xs uppercase tracking-widest block mb-1" >Explanation</span>
                     {q.explanation}
                   </div>
@@ -1187,6 +1295,10 @@ function AuthScreen({ onAuthed }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const isLogin = mode === "login";
+  const accent = isLogin ? "#6FA3F5" : "#4CD9A0";
+  const btnBg = isLogin ? T.blue : T.emerald;
 
   const submit = async () => {
     setError("");
@@ -1225,41 +1337,72 @@ function AuthScreen({ onAuthed }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ background: T.paper, color: T.ink }}>
+    <div
+      className="min-h-screen flex items-center justify-center relative overflow-hidden"
+      style={{ background: "linear-gradient(160deg, #0A1B3D, #123A6B 55%, #0A1B3D)", color: "#fff" }}
+    >
       <FontLoader />
-      <div className="w-full max-w-sm px-6">
+      {/* decorative glow */}
+      <div
+        className="absolute"
+        style={{ width: 300, height: 300, borderRadius: "50%", background: accent, opacity: 0.15, filter: "blur(60px)", top: -80, right: -80 }}
+      />
+      <div
+        className="absolute"
+        style={{ width: 260, height: 260, borderRadius: "50%", background: isLogin ? T.rose : T.amber, opacity: 0.12, filter: "blur(60px)", bottom: -60, left: -60 }}
+      />
+
+      <div className="w-full max-w-sm px-6 relative z-10">
         <div
-          className="inline-block px-2 py-0.5 text-xs tracking-widest mb-4"
-          style={{ fontFamily: "'IBM Plex Mono', monospace", border: `1px solid ${T.ink}`, letterSpacing: "0.15em" }}
+          className="inline-flex items-center gap-2 px-3 py-1 text-xs tracking-widest mb-6"
+          style={{ fontFamily: "'IBM Plex Mono', monospace", border: `1px solid rgba(255,255,255,0.3)`, letterSpacing: "0.15em" }}
         >
-          SMART PREP
+          <GraduationCap size={14} color={accent} /> SMART PREP
         </div>
-        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">
-          {mode === "login" ? "Log in" : "Create your account"}
+
+        <div
+          className="flex items-center justify-center mb-5"
+          style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `1px solid rgba(255,255,255,0.2)` }}
+        >
+          {isLogin ? <ShieldCheck size={24} color={accent} /> : <FlaskConical size={24} color={accent} />}
+        </div>
+
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: accent }} className="text-3xl mb-1">
+          {isLogin ? "Log in" : "Create your account"}
         </h1>
-        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-          {mode === "login" ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
+        <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
+          {isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
         </p>
 
         <div className="mb-3">
-          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Email</label>
-          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid ${T.ink}`, background: "#fff" }}>
-            <Mail size={14} style={{ color: T.inkSoft }} />
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            Email
+          </label>
+          <div
+            className="flex items-center gap-2 px-3"
+            style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+          >
+            <Mail size={14} color={accent} />
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               className="w-full py-3 outline-none"
-              style={{ background: "transparent", fontFamily: "'IBM Plex Mono', monospace" }}
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
             />
           </div>
         </div>
 
         <div className="mb-2">
-          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Password</label>
-          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid ${T.ink}`, background: "#fff" }}>
-            <Lock size={14} style={{ color: T.inkSoft }} />
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            Password
+          </label>
+          <div
+            className="flex items-center gap-2 px-3"
+            style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+          >
+            <Lock size={14} color={accent} />
             <input
               type="password"
               value={password}
@@ -1267,29 +1410,29 @@ function AuthScreen({ onAuthed }) {
               onKeyDown={(e) => e.key === "Enter" && submit()}
               placeholder="At least 6 characters"
               className="w-full py-3 outline-none"
-              style={{ background: "transparent", fontFamily: "'IBM Plex Mono', monospace" }}
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
             />
           </div>
         </div>
 
-        {error && <div className="text-sm mt-2" style={{ color: T.rose }}>{error}</div>}
-        {notice && <div className="text-sm mt-2" style={{ color: T.emerald }}>{notice}</div>}
+        {error && <div className="text-sm mt-2" style={{ color: "#F5A3A3" }}>{error}</div>}
+        {notice && <div className="text-sm mt-2" style={{ color: "#7FE0B8" }}>{notice}</div>}
 
         <button
           onClick={submit}
           disabled={busy}
-          className="w-full py-3 text-sm mt-5 disabled:opacity-50"
-          style={{ background: T.ink, color: T.paper }}
+          className="w-full py-3 text-sm mt-5 disabled:opacity-50 font-medium"
+          style={{ background: btnBg, color: "#fff" }}
         >
-          {busy ? "Please wait…" : mode === "login" ? "Log in" : "Sign up"}
+          {busy ? "Please wait…" : isLogin ? "Log in" : "Sign up"}
         </button>
 
         <button
-          onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); setNotice(""); }}
+          onClick={() => { setMode(isLogin ? "signup" : "login"); setError(""); setNotice(""); }}
           className="w-full text-sm mt-4"
-          style={{ color: T.inkSoft }}
+          style={{ color: accent }}
         >
-          {mode === "login" ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
         </button>
       </div>
     </div>
@@ -1334,7 +1477,7 @@ function AdminGate({ onUnlock, onBack }) {
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder="Passcode"
           className="w-full px-4 py-3 mb-2 outline-none"
-          style={{ border: `1px solid ${T.ink}`, background: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+          style={{ border: `1px solid ${T.ink}`, background: T.card, fontFamily: "'IBM Plex Mono', monospace" }}
         />
         {error && <div className="text-sm mb-3" style={{ color: T.rose }}>{error}</div>}
         <button onClick={submit} className="w-full py-3 text-sm mt-2" style={{ background: T.ink, color: T.paper }}>
@@ -1365,7 +1508,7 @@ function AdminPanel({ bank, setBank, onExit }) {
   const bulkClassificationReady =
     bulkForm.program === "MBBS"
       ? !!(bulkForm.year && bulkForm.block && bulkForm.subject)
-      : !!(bulkForm.subject && (bulkForm.program === "MDCAT" ? bulkForm.topic : true));
+      : !!(bulkForm.subject && (TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : true));
 
   const runBulkExtract = async () => {
     if (!bulkFile) {
@@ -1464,7 +1607,7 @@ function AdminPanel({ bank, setBank, onExit }) {
         year: bulkForm.program === "MBBS" ? bulkForm.year : "",
         block: bulkForm.program === "MBBS" ? bulkForm.block : "",
         subject: bulkForm.subject,
-        topic: bulkForm.program === "MDCAT" ? bulkForm.topic : "",
+        topic: TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : "",
         source: bulkForm.source,
         question: m.question,
         options: m.options,
@@ -1576,7 +1719,7 @@ function AdminPanel({ bank, setBank, onExit }) {
         {tab === "list" && (
           <div>
             <div className="flex flex-wrap items-center gap-3 mb-5">
-              <div className="flex items-center gap-2 px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }}>
+              <div className="flex items-center gap-2 px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }}>
                 <Search size={14} style={{ color: T.inkSoft }} />
                 <input
                   value={search}
@@ -1590,7 +1733,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 value={filterProgram}
                 onChange={(e) => setFilterProgram(e.target.value)}
                 className="px-3 py-2 text-sm"
-                style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
               >
                 <option>All</option>
                 {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
@@ -1604,7 +1747,7 @@ function AdminPanel({ bank, setBank, onExit }) {
 
             <div className="space-y-2">
               {filtered.map((q) => (
-                <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: "#fff", border: `1px solid ${T.line}` }}>
+                <div key={q.id} className="p-4 flex items-start justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
                       {q.program} · {q.year ? `${q.year} · ` : ""}{q.block ? `${q.block} · ` : ""}{q.subject} · {q.topic ? `${q.topic} · ` : ""}{q.source}
@@ -1635,18 +1778,18 @@ function AdminPanel({ bank, setBank, onExit }) {
                   value={form.program}
                   onChange={(e) => setForm({ ...form, program: e.target.value, year: "", block: "", subject: "", topic: "" })}
                   className="w-full px-3 py-2"
-                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
                 >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source</label>
-                <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             </div>
 
-            {form.program === "MDCAT" && (
+            {TOPIC_PROGRAMS.includes(form.program) && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
@@ -1654,7 +1797,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={form.subject}
                     onChange={(e) => setForm({ ...form, subject: e.target.value, topic: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
@@ -1667,7 +1810,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, topic: e.target.value })}
                     disabled={!form.subject}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
@@ -1684,7 +1827,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={form.year}
                     onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select year…</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
@@ -1697,7 +1840,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, block: e.target.value, subject: "" })}
                     disabled={!form.year}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.year ? "Select block…" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[form.year] || {}).map((b) => <option key={b}>{b}</option>)}
@@ -1710,7 +1853,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setForm({ ...form, subject: e.target.value })}
                     disabled={!form.block}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
@@ -1719,22 +1862,22 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             )}
 
-            {form.program !== "MDCAT" && form.program !== "MBBS" && (
+            {!TOPIC_PROGRAMS.includes(form.program) && form.program !== "MBBS" && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                  <input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                  <input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="e.g. Vital Signs" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
                 </div>
               </div>
             )}
 
             <div className="mb-4">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Question</label>
-              <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              <textarea value={form.question} onChange={(e) => setForm({ ...form, question: e.target.value })} rows={3} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
             </div>
             <div className="mb-4 space-y-2">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Options — select the correct one</label>
@@ -1753,14 +1896,14 @@ function AdminPanel({ bank, setBank, onExit }) {
                       setForm({ ...form, options: o });
                     }}
                     className="flex-1 px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   />
                 </div>
               ))}
             </div>
             <div className="mb-6">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation (optional)</label>
-              <textarea value={form.explanation} onChange={(e) => setForm({ ...form, explanation: e.target.value })} rows={2} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+              <textarea value={form.explanation} onChange={(e) => setForm({ ...form, explanation: e.target.value })} rows={2} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
             </div>
             <div className="flex gap-3">
               <button onClick={submit} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
@@ -1786,18 +1929,18 @@ function AdminPanel({ bank, setBank, onExit }) {
                   value={bulkForm.program}
                   onChange={(e) => setBulkForm({ program: e.target.value, year: "", block: "", subject: "", topic: "", source: bulkForm.source })}
                   className="w-full px-3 py-2"
-                  style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
                 >
                   {PROGRAMS.map((p) => <option key={p.key}>{p.key}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source label</label>
-                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             </div>
 
-            {bulkForm.program === "MDCAT" && (
+            {TOPIC_PROGRAMS.includes(bulkForm.program) && (
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
@@ -1805,7 +1948,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={bulkForm.subject}
                     onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value, topic: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
@@ -1818,7 +1961,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
                     disabled={!bulkForm.subject}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
                     {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
@@ -1835,7 +1978,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     value={bulkForm.year}
                     onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "" })}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select year…</option>
                     {Object.keys(MBBS_STRUCTURE).map((y) => <option key={y}>{y}</option>)}
@@ -1848,7 +1991,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "" })}
                     disabled={!bulkForm.year}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.year ? "Select block…" : "Choose year first"}</option>
                     {Object.keys(MBBS_STRUCTURE[bulkForm.year] || {}).map((b) => <option key={b}>{b}</option>)}
@@ -1861,7 +2004,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                     onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })}
                     disabled={!bulkForm.block}
                     className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
@@ -1870,10 +2013,10 @@ function AdminPanel({ bank, setBank, onExit }) {
               </div>
             )}
 
-            {bulkForm.program !== "MDCAT" && bulkForm.program !== "MBBS" && (
+            {!TOPIC_PROGRAMS.includes(bulkForm.program) && bulkForm.program !== "MBBS" && (
               <div className="mb-4">
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
-                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: "#fff" }} />
+                <input value={bulkForm.subject} onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })} placeholder="e.g. Fundamentals" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
               </div>
             )}
 
@@ -1929,7 +2072,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                 </div>
                 <div className="space-y-3">
                   {bulkResults.map((m, idx) => (
-                    <div key={idx} className="p-4" style={{ background: "#fff", border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
+                    <div key={idx} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
                       <div className="flex items-start justify-between gap-3 mb-2">
                         <label className="flex items-center gap-2 text-sm">
                           <input type="checkbox" checked={m.include} onChange={() => toggleBulkInclude(idx)} />
@@ -1949,7 +2092,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                         onChange={(e) => updateBulkResult(idx, { question: e.target.value })}
                         rows={2}
                         className="w-full px-3 py-2 mb-2"
-                        style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'Source Serif 4', serif" }}
+                        style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "'Source Serif 4', serif" }}
                       />
                       <div className="space-y-1 mb-2">
                         {m.options.map((opt, oi) => (
@@ -1967,7 +2110,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                                 updateBulkResult(idx, { options: opts });
                               }}
                               className="flex-1 px-3 py-1.5 text-sm"
-                              style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                              style={{ border: `1px solid ${T.line}`, background: T.card }}
                             />
                           </div>
                         ))}
@@ -1979,7 +2122,7 @@ function AdminPanel({ bank, setBank, onExit }) {
                         rows={2}
                         placeholder="Add an explanation…"
                         className="w-full px-3 py-2 text-sm"
-                        style={{ border: `1px solid ${T.line}`, background: "#fff" }}
+                        style={{ border: `1px solid ${T.line}`, background: T.card }}
                       />
                     </div>
                   ))}
@@ -2004,7 +2147,7 @@ function AdminPanel({ bank, setBank, onExit }) {
               onChange={(e) => setNewPass(e.target.value)}
               placeholder="New passcode"
               className="w-full px-3 py-2 mb-3"
-              style={{ border: `1px solid ${T.line}`, background: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+              style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "'IBM Plex Mono', monospace" }}
             />
             <button onClick={changePass} className="px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>Update passcode</button>
             {passMsg && <div className="text-sm mt-2" style={{ color: T.emerald }}>{passMsg}</div>}
@@ -2071,7 +2214,7 @@ export default function App() {
   const openBlock = (b) => { setBlock(b); setView("block"); };
   const openSubject = (s) => {
     setSubject(s);
-    if (program === "MDCAT") {
+    if (TOPIC_PROGRAMS.includes(program)) {
       setTopic(null);
       setView("topic");
     } else {
@@ -2278,10 +2421,10 @@ export default function App() {
         program={program}
         year={program === "MBBS" ? year : null}
         block={program === "MBBS" ? block : null}
-        topic={program === "MDCAT" ? topic : null}
+        topic={TOPIC_PROGRAMS.includes(program) ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView(program === "MBBS" ? "block" : program === "MDCAT" ? "topic" : "program")}
+        onBack={() => setView(program === "MBBS" ? "block" : TOPIC_PROGRAMS.includes(program) ? "topic" : "program")}
         onStart={startQuiz}
       />
     );
