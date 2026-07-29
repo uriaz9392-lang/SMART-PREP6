@@ -1,12 +1,12 @@
 {
   "name": "Smart Prep",
   "short_name": "Smart Prep",
-  "description": "Practice MCQs and past papers for MDCAT",
+  "description": "Practice MCQs and past papers for MDCAT, KMU CAT, BSN & MBBS",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#EFEEE4",
-  "theme_color": "#1C2B3A",
+  "background_color": "#0B1E3D",
+  "theme_color": "#0B1E3D",
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }
