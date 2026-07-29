@@ -74,7 +74,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, streak, last_challenge_date")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -83,6 +83,10 @@ export async function loadUserStats(userId) {
       totalAttempted: data.total_attempted || 0,
       totalCorrect: data.total_correct || 0,
       bySubject: data.by_subject || {},
+      bookmarks: data.bookmarks || [],
+      wrongIds: data.wrong_ids || [],
+      streak: data.streak || 0,
+      lastChallengeDate: data.last_challenge_date || null,
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -97,6 +101,10 @@ export async function saveUserStats(userId, stats) {
       total_attempted: stats.totalAttempted,
       total_correct: stats.totalCorrect,
       by_subject: stats.bySubject,
+      bookmarks: stats.bookmarks || [],
+      wrong_ids: stats.wrongIds || [],
+      streak: stats.streak || 0,
+      last_challenge_date: stats.lastChallengeDate || null,
     });
     if (error) throw error;
   } catch (e) {
