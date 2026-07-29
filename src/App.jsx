@@ -6,13 +6,207 @@ import {
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
-  BellRing, ChevronDown,
+  BellRing, ChevronDown, Phone, MessageCircle, Medal,
 } from "lucide-react";
-import {
-  loadSharedData, saveSharedData, loadLocalStats, saveLocalStats,
-  signUp, signIn, signOut, getSession, onAuthChange, loadUserStats, saveUserStats,
-  loadNotes, saveNotes, loadNotifications, saveNotifications,
-} from "./supabase.js";
+import { createClient } from "@supabase/supabase-js";
+
+// ============================================================================
+// SUPABASE CLIENT + DATA HELPERS
+// (merged into this single file so there's only one file to place in src/)
+// ============================================================================
+// 1. Go to https://supabase.com → New project (free, no card needed)
+// 2. Project settings → API → copy "Project URL" and "anon public" key below
+const SUPABASE_URL = "https://ehkrddewmmilogbojvkh.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ---- Shared data (question bank + admin passcode) stored in one row ----
+export async function loadSharedData() {
+  try {
+    const { data, error } = await supabase
+      .from("app_data")
+      .select("bank, passcode")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  } catch (e) {
+    console.error("Supabase load failed:", e);
+    return null;
+  }
+}
+
+export async function saveSharedData(partial) {
+  try {
+    const current = (await loadSharedData()) || {};
+    const merged = { id: 1, ...current, ...partial };
+    const { error } = await supabase.from("app_data").upsert(merged);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Supabase save failed:", e);
+  }
+}
+
+// ---- Personal stats: stored locally in the student's own browser ----
+export function loadLocalStats() {
+  try {
+    const raw = localStorage.getItem("mdcat-my-stats");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLocalStats(stats) {
+  try {
+    localStorage.setItem("mdcat-my-stats", JSON.stringify(stats));
+  } catch {}
+}
+
+// ---- Authentication ----
+// extra = { name, course } gets saved on the auth user as user_metadata,
+// so user.user_metadata.name / user.user_metadata.course are available
+// right after sign up / sign in, with no extra database table needed.
+export async function signUp(email, password, extra = {}) {
+  return supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { name: extra.name || "", course: extra.course || "" } },
+  });
+}
+export async function signIn(email, password) {
+  return supabase.auth.signInWithPassword({ email, password });
+}
+export async function signOut() {
+  return supabase.auth.signOut();
+}
+export async function getSession() {
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+export function onAuthChange(callback) {
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  return data.subscription;
+}
+
+// ---- Notes (shared, admin-authored) ----
+// Requires a `notes` jsonb column on the `app_data` table (default value []).
+export async function loadNotes() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("notes").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.notes) || [];
+  } catch (e) {
+    console.error("Load notes failed (add a 'notes' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveNotes(notes) {
+  try {
+    const { error } = await supabase.from("app_data").update({ notes }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save notes failed (add a 'notes' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Notifications (shared, admin-authored) ----
+// Requires a `notifications` jsonb column on the `app_data` table (default value []).
+export async function loadNotifications() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("notifications").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.notifications) || [];
+  } catch (e) {
+    console.error("Load notifications failed (add a 'notifications' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveNotifications(notifications) {
+  try {
+    const { error } = await supabase.from("app_data").update({ notifications }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save notifications failed (add a 'notifications' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Per-user stats (each student's own score, tied to their account) ----
+export async function loadUserStats(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("user_stats")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return {
+      totalAttempted: data.total_attempted || 0,
+      totalCorrect: data.total_correct || 0,
+      bySubject: data.by_subject || {},
+      bookmarks: data.bookmarks || [],
+      wrongIds: data.wrong_ids || [],
+      slowIds: data.slow_ids || [],
+      streak: data.streak || 0,
+      lastChallengeDate: data.last_challenge_date || null,
+      name: data.name || "",
+    };
+  } catch (e) {
+    console.error("Load user stats failed:", e);
+    return null;
+  }
+}
+
+export async function saveUserStats(userId, stats) {
+  try {
+    const { error } = await supabase.from("user_stats").upsert({
+      user_id: userId,
+      total_attempted: stats.totalAttempted,
+      total_correct: stats.totalCorrect,
+      by_subject: stats.bySubject,
+      bookmarks: stats.bookmarks || [],
+      wrong_ids: stats.wrongIds || [],
+      slow_ids: stats.slowIds || [],
+      streak: stats.streak || 0,
+      last_challenge_date: stats.lastChallengeDate || null,
+      name: stats.name || "",
+    });
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save user stats failed:", e);
+  }
+}
+
+// ---- Leaderboard (reads every student's aggregate stats) ----
+// Requires a `name` text column and a `slow_ids` jsonb column (default []) on `user_stats`,
+// plus a Supabase RLS policy that allows SELECT on user_stats to any signed-in user
+// (by default a student can usually only read their own row).
+export async function loadLeaderboard(limit = 50) {
+  try {
+    const { data, error } = await supabase
+      .from("user_stats")
+      .select("name, total_attempted, total_correct")
+      .order("total_correct", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return (data || []).filter((r) => r.name && r.name.trim());
+  } catch (e) {
+    console.error("Load leaderboard failed (check RLS policy + columns on user_stats):", e);
+    return [];
+  }
+}
+// ============================================================================
+// END SUPABASE SECTION
+// ============================================================================
+
+// WhatsApp support numbers shown on the Contact Us page (Pakistan country code 92 is prepended for the wa.me link)
+const CONTACT_WHATSAPP_NUMBERS = [
+  { label: "Support Line 1", display: "0309 9675260", wa: "923099675260" },
+  { label: "Support Line 2", display: "0301 8869272", wa: "923018869272" },
+  { label: "Support Line 3", display: "0325 1171750", wa: "923251171750" },
+];
 
 // ---------- Design tokens ----------
 const T = {
@@ -746,10 +940,132 @@ function NotificationsOverlay({ notifications, onClose }) {
   );
 }
 
+// ---------- Leaderboard ----------
+function LeaderboardView({ onBack, currentUserName }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const data = await loadLeaderboard(50);
+      setRows(data);
+      setError(data.length === 0);
+      setLoading(false);
+    })();
+  }, []);
+
+  const medalColor = (i) => (i === 0 ? "#D4AF37" : i === 1 ? "#B7C0C7" : i === 2 ? "#C9793C" : T.inkSoft);
+
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1 flex items-center gap-2">
+          <Trophy size={22} style={{ color: T.amber }} /> Leaderboard
+        </h1>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers across all students.</p>
+
+        {loading && <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>}
+
+        {!loading && error && (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No leaderboard data yet — start practicing to appear here! (If this stays empty, ask
+            whoever manages Supabase to confirm the <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>user_stats</code> table
+            has a <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>name</code> column and a read policy.)
+          </div>
+        )}
+
+        {!loading && rows.length > 0 && (
+          <div className="space-y-2">
+            {rows.map((r, i) => {
+              const acc = r.total_attempted > 0 ? Math.round((r.total_correct / r.total_attempted) * 100) : 0;
+              const isMe = currentUserName && r.name === currentUserName;
+              return (
+                <div
+                  key={i}
+                  className="flex items-center gap-4 p-3"
+                  style={{
+                    background: isMe ? T.blueSoft : T.card,
+                    border: `1px solid ${isMe ? T.blue : T.line}`,
+                  }}
+                >
+                  <div className="flex items-center justify-center shrink-0" style={{ width: 28 }}>
+                    {i < 3 ? (
+                      <Medal size={20} style={{ color: medalColor(i) }} />
+                    ) : (
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }} className="text-sm">
+                        {i + 1}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className="truncate"
+                      style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600, color: isMe ? T.paper : T.ink }}
+                    >
+                      {r.name}{isMe ? " (You)" : ""}
+                    </div>
+                    <div className="text-xs" style={{ color: isMe ? "#1F3A66" : T.inkSoft }}>
+                      {r.total_correct} correct · {r.total_attempted} attempted · {acc}% accuracy
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Contact Us ----------
+function ContactUsPage({ onBack }) {
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-md mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Contact Us</h1>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Reach out to us on WhatsApp — tap a number to start chatting.</p>
+        <div className="space-y-3">
+          {CONTACT_WHATSAPP_NUMBERS.map((c) => (
+            <a
+              key={c.wa}
+              href={`https://wa.me/${c.wa}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-4 p-4"
+              style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
+            >
+              <div
+                className="flex items-center justify-center shrink-0"
+                style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+              >
+                <MessageCircle size={20} style={{ color: "#fff" }} />
+              </div>
+              <div>
+                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.label}</div>
+                <div className="text-sm" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.display}</div>
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Home: dashboard ----------
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
-  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved,
+  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard,
   notesBank, notifications,
 }) {
   const [navTab, setNavTab] = useState("home");
@@ -866,7 +1182,86 @@ function Home({
       </div>
     );
   }
+  if (navTab === "progress") {
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-md mx-auto px-6 py-10">
+          <button onClick={() => setNavTab("profile")} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Your Progress</h2>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
+          </div>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
+          </div>
+          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
+          </div>
+        </div>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </div>
+    );
+  }
+  if (navTab === "contact") {
+    return (
+      <>
+        <ContactUsPage onBack={() => setNavTab("profile")} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "settings") {
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-md mx-auto px-6 py-10">
+          <button onClick={() => setNavTab("profile")} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Settings</h2>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm mb-1" style={{ color: T.inkSoft }}>Signed in as</div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{userName || "Student"}</div>
+            <div className="text-sm" style={{ color: T.inkSoft }}>{userEmail}</div>
+            {userCourse && (
+              <p className="text-xs mt-2 inline-flex px-2 py-1" style={{ color: T.blue, background: T.blueSoft, borderRadius: 6 }}>
+                {userCourse} student
+              </p>
+            )}
+          </div>
+          {showAdminEntry && (
+            <button
+              onClick={onOpenAdmin}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm mb-3"
+              style={{ border: `1px solid ${T.ink}` }}
+            >
+              <Lock size={14} /> Admin sign-in
+            </button>
+          )}
+          <button
+            onClick={onSignOut}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
+            style={{ border: `1px solid ${T.rose}`, color: T.rose }}
+          >
+            <LogOut size={14} /> Sign out
+          </button>
+        </div>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </div>
+    );
+  }
   if (navTab === "profile") {
+    const menuItems = [
+      { label: "My Progress", sub: "Topics, MCQs & accuracy", icon: TrendingUp, action: () => setNavTab("progress") },
+      { label: "Contact Us", sub: "Chat with us on WhatsApp", icon: Phone, action: () => setNavTab("contact") },
+      { label: "Settings", sub: "Account & admin access", icon: Settings, action: () => setNavTab("settings") },
+    ];
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
@@ -881,27 +1276,30 @@ function Home({
             </p>
           )}
           {!userCourse && <div className="mb-6" />}
-          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
+
+          <div className="space-y-2 mb-6">
+            {menuItems.map((m) => {
+              const Icon = m.icon;
+              return (
+                <button
+                  key={m.label}
+                  onClick={m.action}
+                  className="w-full flex items-center gap-4 p-4 text-left"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div className="flex items-center justify-center shrink-0" style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
+                    <Icon size={18} />
+                  </div>
+                  <div className="flex-1">
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{m.label}</div>
+                    <div className="text-xs" style={{ color: T.inkSoft }}>{m.sub}</div>
+                  </div>
+                  <ChevronRight size={16} style={{ color: T.inkSoft }} />
+                </button>
+              );
+            })}
           </div>
-          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
-          </div>
-          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
-          </div>
-          {showAdminEntry && (
-            <button
-              onClick={onOpenAdmin}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm mb-3"
-              style={{ border: `1px solid ${T.ink}` }}
-            >
-              <Lock size={14} /> Admin sign-in
-            </button>
-          )}
+
           <button
             onClick={onSignOut}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
@@ -1036,9 +1434,9 @@ function Home({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
           {[
             { label: "Daily Challenge", sub: stats?.streak ? `🔥 ${stats.streak} day streak` : "Test your knowledge daily", icon: ClipboardCheck, action: onDailyChallenge },
-            { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("profile") },
+            { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("progress") },
             { label: "Weak Topics", sub: `${stats?.wrongIds?.length || 0} to review`, icon: RotateCcw, action: onReviewMistakes },
-            { label: "Leaderboard", sub: "Compete & be the best", icon: Trophy, action: () => soon("Leaderboard") },
+            { label: "Leaderboard", sub: "Compete & be the best", icon: Trophy, action: onOpenLeaderboard },
           ].map((q) => {
             const Icon = q.icon;
             return (
@@ -1458,17 +1856,25 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onToggleBookmark }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [answerTimes, setAnswerTimes] = useState({});
   const [showExplain, setShowExplain] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(timeLimit || 0);
+  const [questionStartedAt, setQuestionStartedAt] = useState(Date.now());
   const q = questions[idx];
   const letters = ["A", "B", "C", "D"];
   const revealed = answers[idx] !== undefined;
   const isCorrect = revealed && answers[idx] === q.correct;
   const isBookmarked = bookmarks && q ? bookmarks.includes(q.id) : false;
 
+  useEffect(() => {
+    setQuestionStartedAt(Date.now());
+  }, [idx]);
+
   const select = (i) => {
     if (revealed) return;
+    const elapsedSeconds = Math.round((Date.now() - questionStartedAt) / 1000);
     setAnswers((a) => ({ ...a, [idx]: i }));
+    setAnswerTimes((t) => ({ ...t, [idx]: elapsedSeconds }));
   };
 
   const toggleExplain = () => setShowExplain((s) => ({ ...s, [idx]: !s[idx] }));
@@ -1478,8 +1884,8 @@ function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onTo
     questions.forEach((qq, i) => {
       if (answers[i] === qq.correct) correct++;
     });
-    onFinish({ questions, answers, correct });
-  }, [questions, answers, onFinish]);
+    onFinish({ questions, answers, answerTimes, correct });
+  }, [questions, answers, answerTimes, onFinish]);
 
   useEffect(() => {
     if (!timeLimit) return;
@@ -2918,10 +3324,11 @@ export default function App() {
       const [n, notifs] = await Promise.all([loadNotes(), loadNotifications()]);
       setNotesBank(n);
       setNotifications(notifs);
-      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], streak: 0, lastChallengeDate: null };
+      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "" };
       if (user) {
         const st = await loadUserStats(user.id);
-        setStats(st ? { ...emptyStats, ...st } : emptyStats);
+        const displayName = user?.user_metadata?.name || "";
+        setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
       } else {
         setStats(emptyStats);
       }
@@ -2992,15 +3399,20 @@ export default function App() {
   };
 
   const openSaved = () => {
-    const ids = new Set(stats?.bookmarks || []);
+    // Saved = manually bookmarked + auto-saved (answered wrong, or took over 1 minute)
+    const ids = new Set([
+      ...(stats?.bookmarks || []),
+      ...(stats?.wrongIds || []),
+      ...(stats?.slowIds || []),
+    ]);
     const qs = bank.filter((q) => ids.has(q.id));
-    startSpecialQuiz(qs, "Saved Questions", "saved", "You haven't saved any questions yet. Tap the bookmark icon while practicing to save one.");
+    startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
   };
 
   const toggleBookmark = async (qid) => {
     const current = stats?.bookmarks || [];
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
-    const nextStats = { ...stats, bookmarks: next };
+    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "" };
     setStats(nextStats);
     if (user) await saveUserStats(user.id, nextStats);
   };
@@ -3008,10 +3420,20 @@ export default function App() {
   const finishQuiz = async (res) => {
     setResult(res);
 
+    const SLOW_THRESHOLD_SECONDS = 60;
     const wrongSet = new Set(stats?.wrongIds || []);
+    const slowSet = new Set(stats?.slowIds || []);
     res.questions.forEach((qq, i) => {
       if (res.answers[i] === qq.correct) wrongSet.delete(qq.id);
       else wrongSet.add(qq.id);
+
+      const elapsed = res.answerTimes ? res.answerTimes[i] : null;
+      if (elapsed !== null && elapsed !== undefined && elapsed > SLOW_THRESHOLD_SECONDS) {
+        slowSet.add(qq.id);
+      } else if (elapsed !== null && elapsed !== undefined) {
+        // Answered quickly this time — no longer flag it as "slow"
+        slowSet.delete(qq.id);
+      }
     });
 
     let streak = stats?.streak || 0;
@@ -3031,8 +3453,10 @@ export default function App() {
       bySubject: { ...(stats?.bySubject || {}) },
       bookmarks: stats?.bookmarks || [],
       wrongIds: Array.from(wrongSet),
+      slowIds: Array.from(slowSet),
       streak,
       lastChallengeDate,
+      name: user?.user_metadata?.name || stats?.name || "",
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -3092,10 +3516,14 @@ export default function App() {
         onDailyChallenge={openDailyChallenge}
         onReviewMistakes={openReviewMistakes}
         onOpenSaved={openSaved}
+        onOpenLeaderboard={() => setView("leaderboard")}
         notesBank={notesBank}
         notifications={notifications}
       />
     );
+  }
+  if (view === "leaderboard") {
+    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} />;
   }
   if (view === "admin-gate") {
     return <AdminGate onUnlock={() => setView("admin")} onBack={() => setView("home")} />;
