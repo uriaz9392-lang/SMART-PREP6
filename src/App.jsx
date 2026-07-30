@@ -146,6 +146,90 @@ export async function saveNotifications(notifications) {
   }
 }
 
+// ---- Reviews (public — any signed-in student can add one, everyone can read) ----
+// Requires a `reviews` jsonb column on the `app_data` table (default value []).
+export async function loadReviews() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("reviews").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.reviews) || [];
+  } catch (e) {
+    console.error("Load reviews failed (add a 'reviews' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveReviews(reviews) {
+  try {
+    const { error } = await supabase.from("app_data").update({ reviews }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save reviews failed (add a 'reviews' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Syllabus items (admin-authored: links, PDFs, or text blocks) ----
+// Requires a `syllabus` jsonb column on the `app_data` table (default value []).
+export async function loadSyllabusItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("syllabus").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.syllabus) || [];
+  } catch (e) {
+    console.error("Load syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveSyllabusItems(syllabus) {
+  try {
+    const { error } = await supabase.from("app_data").update({ syllabus }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Guideline items (admin-authored: links, PDFs, or text blocks) ----
+// Requires a `guidelines` jsonb column on the `app_data` table (default value []).
+export async function loadGuidelineItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("guidelines").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.guidelines) || [];
+  } catch (e) {
+    console.error("Load guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveGuidelineItems(guidelines) {
+  try {
+    const { error } = await supabase.from("app_data").update({ guidelines }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Contact items (admin-authored links: WhatsApp, phone, email, groups, etc.) ----
+// Requires a `contact_items` jsonb column on the `app_data` table (default value []).
+export async function loadContactItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("contact_items").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.contact_items) || [];
+  } catch (e) {
+    console.error("Load contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveContactItems(contact_items) {
+  try {
+    const { error } = await supabase.from("app_data").update({ contact_items }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+  }
+}
+
 // ---- Per-user stats (each student's own score, tied to their account) ----
 export async function loadUserStats(userId) {
   try {
@@ -214,13 +298,6 @@ export async function loadLeaderboard(limit = 50) {
 // ============================================================================
 // END SUPABASE SECTION
 // ============================================================================
-
-// WhatsApp support numbers shown on the Contact Us page (Pakistan country code 92 is prepended for the wa.me link)
-const CONTACT_WHATSAPP_NUMBERS = [
-  { label: "Support Line 1", display: "0309 9675260", wa: "923099675260" },
-  { label: "Support Line 2", display: "0301 8869272", wa: "923018869272" },
-  { label: "Support Line 3", display: "0325 1171750", wa: "923251171750" },
-];
 
 // Social / community links on the Contact Us page.
 // ⚠️ Placeholder hrefs ("#") — replace with your real links whenever you have them.
@@ -650,12 +727,215 @@ function InfoFolderPage({ title, icon: Icon, color, onBack, children }) {
   );
 }
 
+// ---------- Generic admin-editable content list (used for Syllabus & Guidelines) ----------
+// Everyone can read the items. The "+ Add item" form only renders when isAdmin is true.
+function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRemove, onBack, emptyText, addLabel }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", type: "link", value: "" });
+
+  const submit = async () => {
+    if (!form.title.trim() || !form.value.trim()) {
+      alert(`Please fill in the title and ${form.type === "text" ? "content" : "link"}.`);
+      return;
+    }
+    await onAdd({ title: form.title.trim(), type: form.type, value: form.value.trim() });
+    setForm({ title: "", type: "link", value: "" });
+    setShowForm(false);
+  };
+
+  return (
+    <InfoFolderPage title={title} icon={Icon} color={color} onBack={onBack}>
+      {isAdmin && (
+        <div className="mb-6">
+          {!showForm ? (
+            <button
+              onClick={() => setShowForm(true)}
+              className="flex items-center gap-2 text-sm px-4 py-2"
+              style={{ background: T.ink, color: T.paper }}
+            >
+              <Plus size={14} /> {addLabel || "Add item"}
+            </button>
+          ) : (
+            <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <input
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                placeholder="Title"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+              />
+              <div className="flex gap-2">
+                {["link", "pdf", "text"].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setForm({ ...form, type: t })}
+                    className="px-3 py-1.5 text-xs uppercase"
+                    style={{
+                      border: `1px solid ${T.ink}`,
+                      background: form.type === t ? T.ink : "transparent",
+                      color: form.type === t ? T.paper : T.ink,
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              {form.type === "text" ? (
+                <textarea
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  rows={4}
+                  placeholder="Write the content…"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+              ) : (
+                <input
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  placeholder={form.type === "pdf" ? "PDF link (e.g. Google Drive share link)" : "https://…"}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+              )}
+              <div className="flex gap-2">
+                <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                  Save
+                </button>
+                <button
+                  onClick={() => { setShowForm(false); setForm({ title: "", type: "link", value: "" }); }}
+                  className="px-4 py-2 text-sm"
+                  style={{ border: `1px solid ${T.ink}` }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(!items || items.length === 0) ? (
+        <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>{emptyText}</div>
+      ) : (
+        <div className="space-y-3">
+          {items.map((it) => (
+            <div key={it.id} className="p-4 flex items-start justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="flex-1 min-w-0">
+                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="mb-1">{it.title}</div>
+                {it.type === "text" ? (
+                  <div className="text-sm whitespace-pre-wrap" style={{ color: T.inkSoft }}>{it.value}</div>
+                ) : (
+                  <a href={it.value} target="_blank" rel="noreferrer" className="text-sm break-all" style={{ color: "#6FA3F5" }}>
+                    {it.type === "pdf" ? "📄 " : "🔗 "}{it.value}
+                  </a>
+                )}
+              </div>
+              {isAdmin && (
+                <button onClick={() => onRemove(it.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </InfoFolderPage>
+  );
+}
+
+// ---------- Reviews: every signed-in student can post one, everyone can read all of them ----------
+function ReviewsPage({ onBack, reviews, userName, onAdd }) {
+  const [showForm, setShowForm] = useState(false);
+  const [rating, setRating] = useState(5);
+  const [text, setText] = useState("");
+
+  const submit = async () => {
+    if (!text.trim()) {
+      alert("Please write a short review first.");
+      return;
+    }
+    await onAdd({ name: userName || "Student", rating, text: text.trim() });
+    setText("");
+    setRating(5);
+    setShowForm(false);
+  };
+
+  const sorted = [...(reviews || [])].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  return (
+    <InfoFolderPage title="Reviews" icon={Star} color="#B5822A" onBack={onBack}>
+      <div className="mb-6">
+        {!showForm ? (
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 text-sm px-4 py-2"
+            style={{ background: T.ink, color: T.paper }}
+          >
+            <Plus size={14} /> Write a review
+          </button>
+        ) : (
+          <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} onClick={() => setRating(n)}>
+                  <Star size={22} style={{ color: n <= rating ? T.amber : T.inkSoft }} fill={n <= rating ? T.amber : "none"} />
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={3}
+              placeholder="Share your experience…"
+              className="w-full px-3 py-2"
+              style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+            />
+            <div className="flex gap-2">
+              <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                Post review
+              </button>
+              <button onClick={() => setShowForm(false)} className="px-4 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {sorted.length === 0 ? (
+        <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+          No reviews yet — be the first to share your experience!
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {sorted.map((r) => (
+            <div key={r.id} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="flex items-center justify-between mb-1">
+                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</div>
+                <div className="flex items-center gap-0.5">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Star key={n} size={13} style={{ color: n <= r.rating ? T.amber : T.inkSoft }} fill={n <= r.rating ? T.amber : "none"} />
+                  ))}
+                </div>
+              </div>
+              <div className="text-sm" style={{ color: T.inkSoft }}>{r.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </InfoFolderPage>
+  );
+}
+
 // ---------- Notes: browse by program -> subject -> note ----------
-function NotesFlow({ notesBank, programs, onExit }) {
+function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
   // step: "program" (only shown if the student has more than one visible program) -> "subject" -> "note"
   const [prog, setProg] = useState(programs.length === 1 ? programs[0].key : null);
   const [subject, setSubject] = useState(null);
   const [noteId, setNoteId] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newNote, setNewNote] = useState({ title: "", content: "" });
 
   const notesForProg = (notesBank || []).filter((n) => n.program === prog);
   const subjects = useMemo(() => {
@@ -728,6 +1008,63 @@ function NotesFlow({ notesBank, programs, onExit }) {
             <ArrowLeft size={16} /> Back to subjects
           </button>
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">{subject}</h1>
+
+          {isAdmin && (
+            <div className="mb-6">
+              {!showAddForm ? (
+                <button
+                  onClick={() => setShowAddForm(true)}
+                  className="flex items-center gap-2 text-sm px-4 py-2"
+                  style={{ background: T.ink, color: T.paper }}
+                >
+                  <Plus size={14} /> Add note here
+                </button>
+              ) : (
+                <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <input
+                    value={newNote.title}
+                    onChange={(e) => setNewNote({ ...newNote, title: e.target.value })}
+                    placeholder="Note title"
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                  />
+                  <textarea
+                    value={newNote.content}
+                    onChange={(e) => setNewNote({ ...newNote, content: e.target.value })}
+                    rows={6}
+                    placeholder="Write or paste the note content…"
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!newNote.title.trim() || !newNote.content.trim()) {
+                          alert("Please fill in the title and content.");
+                          return;
+                        }
+                        await onAddNote(prog, subject, newNote.title.trim(), newNote.content.trim());
+                        setNewNote({ title: "", content: "" });
+                        setShowAddForm(false);
+                      }}
+                      className="px-4 py-2 text-sm"
+                      style={{ background: T.emerald, color: "#fff" }}
+                    >
+                      Save note
+                    </button>
+                    <button
+                      onClick={() => { setShowAddForm(false); setNewNote({ title: "", content: "" }); }}
+                      className="px-4 py-2 text-sm"
+                      style={{ border: `1px solid ${T.ink}` }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {list.length === 0 ? (
             <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>No notes here yet.</div>
           ) : (
@@ -1073,7 +1410,20 @@ function LeaderboardView({ onBack, currentUserName }) {
 }
 
 // ---------- Contact Us ----------
-function ContactUsPage({ onBack }) {
+function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveContact }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", value: "" });
+
+  const submit = async () => {
+    if (!form.title.trim() || !form.value.trim()) {
+      alert("Please fill in the label and the WhatsApp number / link.");
+      return;
+    }
+    await onAddContact({ title: form.title.trim(), value: form.value.trim() });
+    setForm({ title: "", value: "" });
+    setShowForm(false);
+  };
+
   return (
     <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
@@ -1082,30 +1432,84 @@ function ContactUsPage({ onBack }) {
           <ArrowLeft size={16} /> Back
         </button>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Contact Us</h1>
-        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Reach out to us on WhatsApp — tap a number to start chatting.</p>
-        <div className="space-y-3 mb-10">
-          {CONTACT_WHATSAPP_NUMBERS.map((c) => (
-            <a
-              key={c.wa}
-              href={`https://wa.me/${c.wa}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-4 p-4"
-              style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
-            >
-              <div
-                className="flex items-center justify-center shrink-0"
-                style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Reach out to us — tap a link below to start chatting.</p>
+
+        {isAdmin && (
+          <div className="mb-4">
+            {!showForm ? (
+              <button
+                onClick={() => setShowForm(true)}
+                className="flex items-center gap-2 text-sm px-4 py-2"
+                style={{ background: T.ink, color: T.paper }}
               >
-                <MessageCircle size={20} style={{ color: "#fff" }} />
+                <Plus size={14} /> Add contact link
+              </button>
+            ) : (
+              <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                <input
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  placeholder="Label (e.g. Support Line 1)"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+                <input
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  placeholder="https://wa.me/92XXXXXXXXXX or any link"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+                <div className="flex gap-2">
+                  <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>Save</button>
+                  <button
+                    onClick={() => { setShowForm(false); setForm({ title: "", value: "" }); }}
+                    className="px-4 py-2 text-sm"
+                    style={{ border: `1px solid ${T.ink}` }}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
-              <div>
-                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.label}</div>
-                <div className="text-sm" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.display}</div>
+            )}
+          </div>
+        )}
+
+        {(!contactItems || contactItems.length === 0) ? (
+          <div className="p-6 text-sm mb-10" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No contact links added yet.
+          </div>
+        ) : (
+          <div className="space-y-3 mb-10">
+            {contactItems.map((c) => (
+              <div key={c.id} className="flex items-center gap-3">
+                <a
+                  href={c.value}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex-1 flex items-center gap-4 p-4 min-w-0"
+                  style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+                  >
+                    <MessageCircle size={20} style={{ color: "#fff" }} />
+                  </div>
+                  <div className="min-w-0">
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.title}</div>
+                    <div className="text-sm truncate" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.value}</div>
+                  </div>
+                </a>
+                {isAdmin && (
+                  <button onClick={() => onRemoveContact(c.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
-            </a>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
 
         <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-1">Follow & Join Us</h2>
         <p className="text-xs mb-4" style={{ color: T.inkSoft }}>
@@ -1146,7 +1550,12 @@ function ContactUsPage({ onBack }) {
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard,
-  notesBank, notifications,
+  notesBank, notifications, isAdmin,
+  reviews, onAddReview,
+  syllabusItems, onAddSyllabus, onRemoveSyllabus,
+  guidelineItems, onAddGuideline, onRemoveGuideline,
+  contactItems, onAddContact, onRemoveContact,
+  onAddNote,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1192,7 +1601,7 @@ function Home({
   if (navTab === "notes") {
     return (
       <>
-        <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} />
+        <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} isAdmin={isAdmin} onAddNote={onAddNote} />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1291,7 +1700,13 @@ function Home({
   if (navTab === "contact") {
     return (
       <>
-        <ContactUsPage onBack={() => setNavTab("profile")} />
+        <ContactUsPage
+          onBack={() => setNavTab("profile")}
+          contactItems={contactItems}
+          isAdmin={isAdmin}
+          onAddContact={onAddContact}
+          onRemoveContact={onRemoveContact}
+        />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1299,11 +1714,12 @@ function Home({
   if (navTab === "reviews") {
     return (
       <>
-        <InfoFolderPage title="Reviews" icon={Star} color="#B5822A" onBack={() => setNavTab("profile")}>
-          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            Student reviews will appear here soon.
-          </div>
-        </InfoFolderPage>
+        <ReviewsPage
+          onBack={() => setNavTab("profile")}
+          reviews={reviews}
+          userName={userName}
+          onAdd={onAddReview}
+        />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1311,11 +1727,18 @@ function Home({
   if (navTab === "syllabus") {
     return (
       <>
-        <InfoFolderPage title="Syllabus" icon={BookOpen} color="#2E63D6" onBack={() => setNavTab("profile")}>
-          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            The syllabus breakdown will appear here soon.
-          </div>
-        </InfoFolderPage>
+        <ContentListPage
+          title="Syllabus"
+          icon={BookOpen}
+          color="#2E63D6"
+          onBack={() => setNavTab("profile")}
+          items={syllabusItems}
+          isAdmin={isAdmin}
+          onAdd={onAddSyllabus}
+          onRemove={onRemoveSyllabus}
+          addLabel="Add syllabus item"
+          emptyText="The syllabus breakdown will appear here soon."
+        />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1323,11 +1746,18 @@ function Home({
   if (navTab === "guidelines") {
     return (
       <>
-        <InfoFolderPage title="Guidelines" icon={ClipboardList} color="#1F9D6B" onBack={() => setNavTab("profile")}>
-          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            Exam & app guidelines will appear here soon.
-          </div>
-        </InfoFolderPage>
+        <ContentListPage
+          title="Guidelines"
+          icon={ClipboardList}
+          color="#1F9D6B"
+          onBack={() => setNavTab("profile")}
+          items={guidelineItems}
+          isAdmin={isAdmin}
+          onAdd={onAddGuideline}
+          onRemove={onRemoveGuideline}
+          addLabel="Add guideline item"
+          emptyText="Exam & app guidelines will appear here soon."
+        />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1379,7 +1809,7 @@ function Home({
       { label: "Syllabus", sub: "Browse the full syllabus", icon: BookOpen, color: "#7C5CD6", action: () => setNavTab("syllabus") },
       { label: "Guidelines", sub: "Exam & app guidelines", icon: ClipboardList, color: "#1F9D6B", action: () => setNavTab("guidelines") },
       { label: "Contact Us", sub: "Chat with us on WhatsApp", icon: Phone, color: "#2EA8A0", action: () => setNavTab("contact") },
-      { label: "Settings", sub: "Account & admin access", icon: Settings, color: "#B8493F", action: () => setNavTab("settings") },
+      { label: "Settings", sub: showAdminEntry ? "Account & admin access" : "Account settings", icon: Settings, color: "#B8493F", action: () => setNavTab("settings") },
     ];
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
@@ -3571,6 +4001,14 @@ export default function App() {
   const [bank, setBank] = useState([]);
   const [notesBank, setNotesBank] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [syllabusItems, setSyllabusItems] = useState([]);
+  const [guidelineItems, setGuidelineItems] = useState([]);
+  const [contactItems, setContactItems] = useState([]);
+  // True once the admin passcode has been entered successfully this session.
+  // Lets an admin see the "+ Add" controls on Syllabus/Guidelines/Contact/Notes
+  // even after exiting the full Admin Panel, without giving those controls to students.
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [stats, setStats] = useState(null);
   const [view, setView] = useState("home");
   const [program, setProgram] = useState(null);
@@ -3609,9 +4047,15 @@ export default function App() {
         await saveBank(b);
       }
       setBank(b);
-      const [n, notifs] = await Promise.all([loadNotes(), loadNotifications()]);
+      const [n, notifs, rv, syl, gui, con] = await Promise.all([
+        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(),
+      ]);
       setNotesBank(n);
       setNotifications(notifs);
+      setReviews(rv);
+      setSyllabusItems(syl);
+      setGuidelineItems(gui);
+      setContactItems(con);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "" };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -3705,6 +4149,56 @@ export default function App() {
     if (user) await saveUserStats(user.id, nextStats);
   };
 
+  // ---- Reviews: any signed-in student can add one; visible to everyone ----
+  const addReview = async (review) => {
+    const next = [...reviews, { ...review, id: uid(), createdAt: new Date().toISOString() }];
+    setReviews(next);
+    await saveReviews(next);
+  };
+
+  // ---- Syllabus items: admin-only add/remove ----
+  const addSyllabusItem = async (item) => {
+    const next = [...syllabusItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setSyllabusItems(next);
+    await saveSyllabusItems(next);
+  };
+  const removeSyllabusItem = async (id) => {
+    const next = syllabusItems.filter((i) => i.id !== id);
+    setSyllabusItems(next);
+    await saveSyllabusItems(next);
+  };
+
+  // ---- Guideline items: admin-only add/remove ----
+  const addGuidelineItem = async (item) => {
+    const next = [...guidelineItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setGuidelineItems(next);
+    await saveGuidelineItems(next);
+  };
+  const removeGuidelineItem = async (id) => {
+    const next = guidelineItems.filter((i) => i.id !== id);
+    setGuidelineItems(next);
+    await saveGuidelineItems(next);
+  };
+
+  // ---- Contact items (WhatsApp / links): admin-only add/remove ----
+  const addContactItem = async (item) => {
+    const next = [...contactItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setContactItems(next);
+    await saveContactItems(next);
+  };
+  const removeContactItem = async (id) => {
+    const next = contactItems.filter((i) => i.id !== id);
+    setContactItems(next);
+    await saveContactItems(next);
+  };
+
+  // ---- Quick "add note" from inside the Notes tab (admin only) ----
+  const quickAddNote = async (programKey, subjectName, title, content) => {
+    const next = [...notesBank, { id: uid(), program: programKey, subject: subjectName, title, content }];
+    setNotesBank(next);
+    await saveNotes(next);
+  };
+
   const finishQuiz = async (res) => {
     setResult(res);
 
@@ -3763,6 +4257,7 @@ export default function App() {
     await signOut();
     setUser(null);
     setStats(null);
+    setAdminUnlocked(false);
     setView("home");
   };
 
@@ -3820,6 +4315,19 @@ export default function App() {
         onOpenLeaderboard={() => setView("leaderboard")}
         notesBank={notesBank}
         notifications={notifications}
+        isAdmin={adminUnlocked}
+        reviews={reviews}
+        onAddReview={addReview}
+        syllabusItems={syllabusItems}
+        onAddSyllabus={addSyllabusItem}
+        onRemoveSyllabus={removeSyllabusItem}
+        guidelineItems={guidelineItems}
+        onAddGuideline={addGuidelineItem}
+        onRemoveGuideline={removeGuidelineItem}
+        contactItems={contactItems}
+        onAddContact={addContactItem}
+        onRemoveContact={removeContactItem}
+        onAddNote={quickAddNote}
       />
     );
   }
@@ -3827,7 +4335,7 @@ export default function App() {
     return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} />;
   }
   if (view === "admin-gate") {
-    return <AdminGate onUnlock={() => setView("admin")} onBack={() => setView("home")} />;
+    return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={() => setView("home")} />;
   }
   if (view === "admin") {
     return (
