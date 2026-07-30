@@ -230,6 +230,27 @@ export async function saveContactItems(contact_items) {
   }
 }
 
+// ---- Social links (admin-authored URLs for the fixed WhatsApp Group / Instagram / Facebook / TikTok cards) ----
+// Requires a `social_links` jsonb column on the `app_data` table (default value {}).
+export async function loadSocialLinksMap() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("social_links").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.social_links) || {};
+  } catch (e) {
+    console.error("Load social links failed (add a 'social_links' jsonb column to app_data):", e);
+    return {};
+  }
+}
+export async function saveSocialLinksMap(social_links) {
+  try {
+    const { error } = await supabase.from("app_data").update({ social_links }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save social links failed (add a 'social_links' jsonb column to app_data):", e);
+  }
+}
+
 // ---- Per-user stats (each student's own score, tied to their account) ----
 export async function loadUserStats(userId) {
   try {
@@ -1410,9 +1431,11 @@ function LeaderboardView({ onBack, currentUserName }) {
 }
 
 // ---------- Contact Us ----------
-function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveContact }) {
+function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveContact, socialLinks, onUpdateSocialLink }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ title: "", value: "" });
+  const [editingSocial, setEditingSocial] = useState(null);
+  const [socialUrl, setSocialUrl] = useState("");
 
   const submit = async () => {
     if (!form.title.trim() || !form.value.trim()) {
@@ -1422,6 +1445,15 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
     await onAddContact({ title: form.title.trim(), value: form.value.trim() });
     setForm({ title: "", value: "" });
     setShowForm(false);
+  };
+
+  const startEditSocial = (label) => {
+    setEditingSocial(label);
+    setSocialUrl((socialLinks && socialLinks[label]) || "");
+  };
+  const saveSocial = async (label) => {
+    await onUpdateSocialLink(label, socialUrl.trim());
+    setEditingSocial(null);
   };
 
   return (
@@ -1475,69 +1507,98 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
           </div>
         )}
 
-        {(!contactItems || contactItems.length === 0) ? (
-          <div className="p-6 text-sm mb-10" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-            No contact links added yet.
-          </div>
-        ) : (
-          <div className="space-y-3 mb-10">
-            {contactItems.map((c) => (
-              <div key={c.id} className="flex items-center gap-3">
-                <a
-                  href={c.value}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex-1 flex items-center gap-4 p-4 min-w-0"
-                  style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
-                >
-                  <div
-                    className="flex items-center justify-center shrink-0"
-                    style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+        {/* Non-admin students only see this block if there's actually something to show */}
+        {(isAdmin || (contactItems && contactItems.length > 0)) && (
+          (!contactItems || contactItems.length === 0) ? (
+            <div className="p-6 text-sm mb-10" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+              No contact links added yet.
+            </div>
+          ) : (
+            <div className="space-y-3 mb-10">
+              {contactItems.map((c) => (
+                <div key={c.id} className="flex items-center gap-3">
+                  <a
+                    href={c.value}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center gap-4 p-4 min-w-0"
+                    style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
                   >
-                    <MessageCircle size={20} style={{ color: "#fff" }} />
-                  </div>
-                  <div className="min-w-0">
-                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.title}</div>
-                    <div className="text-sm truncate" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.value}</div>
-                  </div>
-                </a>
-                {isAdmin && (
-                  <button onClick={() => onRemoveContact(c.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
-                    <Trash2 size={14} />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+                    <div
+                      className="flex items-center justify-center shrink-0"
+                      style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+                    >
+                      <MessageCircle size={20} style={{ color: "#fff" }} />
+                    </div>
+                    <div className="min-w-0">
+                      <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.title}</div>
+                      <div className="text-sm truncate" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.value}</div>
+                    </div>
+                  </a>
+                  {isAdmin && (
+                    <button onClick={() => onRemoveContact(c.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
         )}
 
         <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-1">Follow & Join Us</h2>
-        <p className="text-xs mb-4" style={{ color: T.inkSoft }}>
-          Links will be added soon — tap to update them once ready.
-        </p>
+        {isAdmin && (
+          <p className="text-xs mb-4" style={{ color: T.inkSoft }}>
+            Tap the pencil on any card below to set or update its link.
+          </p>
+        )}
         <div className="space-y-3">
           {SOCIAL_LINKS.map((s) => {
             const Icon = s.icon;
+            const url = (socialLinks && socialLinks[s.label]) || "";
+            const isEditing = editingSocial === s.label;
             return (
-              <a
-                key={s.label}
-                href={s.href}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-4 p-4"
-                style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
-              >
-                <div
-                  className="flex items-center justify-center shrink-0"
-                  style={{ width: 44, height: 44, borderRadius: "50%", background: s.color }}
-                >
-                  <Icon size={20} style={{ color: "#fff" }} />
+              <div key={s.label}>
+                <div className="flex items-center gap-3">
+                  <a
+                    href={url || "#"}
+                    target={url ? "_blank" : undefined}
+                    rel="noreferrer"
+                    onClick={(e) => { if (!url) e.preventDefault(); }}
+                    className="flex-1 flex items-center gap-4 p-4 min-w-0"
+                    style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink, opacity: url ? 1 : 0.6 }}
+                  >
+                    <div
+                      className="flex items-center justify-center shrink-0"
+                      style={{ width: 44, height: 44, borderRadius: "50%", background: s.color }}
+                    >
+                      <Icon size={20} style={{ color: "#fff" }} />
+                    </div>
+                    <div className="min-w-0">
+                      <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{s.label}</div>
+                      <div className="text-sm truncate" style={{ color: T.inkSoft }}>{url || s.sub}</div>
+                    </div>
+                  </a>
+                  {isAdmin && (
+                    <button onClick={() => startEditSocial(s.label)} className="p-2 shrink-0" style={{ border: `1px solid ${T.ink}` }}>
+                      <Pencil size={14} />
+                    </button>
+                  )}
                 </div>
-                <div>
-                  <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{s.label}</div>
-                  <div className="text-sm" style={{ color: T.inkSoft }}>{s.sub}</div>
-                </div>
-              </a>
+                {isAdmin && isEditing && (
+                  <div className="p-3 mt-2 flex gap-2" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <input
+                      value={socialUrl}
+                      onChange={(e) => setSocialUrl(e.target.value)}
+                      placeholder="https://…"
+                      className="flex-1 px-3 py-2 text-sm"
+                      style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                    />
+                    <button onClick={() => saveSocial(s.label)} className="px-3 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>Save</button>
+                    <button onClick={() => setEditingSocial(null)} className="px-3 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>Cancel</button>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -1555,6 +1616,7 @@ function Home({
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
   guidelineItems, onAddGuideline, onRemoveGuideline,
   contactItems, onAddContact, onRemoveContact,
+  socialLinks, onUpdateSocialLink,
   onAddNote,
 }) {
   const [navTab, setNavTab] = useState("home");
@@ -1706,6 +1768,8 @@ function Home({
           isAdmin={isAdmin}
           onAddContact={onAddContact}
           onRemoveContact={onRemoveContact}
+          socialLinks={socialLinks}
+          onUpdateSocialLink={onUpdateSocialLink}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
@@ -4005,6 +4069,7 @@ export default function App() {
   const [syllabusItems, setSyllabusItems] = useState([]);
   const [guidelineItems, setGuidelineItems] = useState([]);
   const [contactItems, setContactItems] = useState([]);
+  const [socialLinks, setSocialLinks] = useState({});
   // True once the admin passcode has been entered successfully this session.
   // Lets an admin see the "+ Add" controls on Syllabus/Guidelines/Contact/Notes
   // even after exiting the full Admin Panel, without giving those controls to students.
@@ -4047,8 +4112,8 @@ export default function App() {
         await saveBank(b);
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con] = await Promise.all([
-        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(),
+      const [n, notifs, rv, syl, gui, con, sl] = await Promise.all([
+        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(),
       ]);
       setNotesBank(n);
       setNotifications(notifs);
@@ -4056,6 +4121,7 @@ export default function App() {
       setSyllabusItems(syl);
       setGuidelineItems(gui);
       setContactItems(con);
+      setSocialLinks(sl);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "" };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -4190,6 +4256,13 @@ export default function App() {
     const next = contactItems.filter((i) => i.id !== id);
     setContactItems(next);
     await saveContactItems(next);
+  };
+
+  // ---- Social link cards (WhatsApp Group / Instagram / Facebook / TikTok): admin-only update ----
+  const updateSocialLink = async (label, url) => {
+    const next = { ...socialLinks, [label]: url };
+    setSocialLinks(next);
+    await saveSocialLinksMap(next);
   };
 
   // ---- Quick "add note" from inside the Notes tab (admin only) ----
@@ -4327,6 +4400,8 @@ export default function App() {
         contactItems={contactItems}
         onAddContact={addContactItem}
         onRemoveContact={removeContactItem}
+        socialLinks={socialLinks}
+        onUpdateSocialLink={updateSocialLink}
         onAddNote={quickAddNote}
       />
     );
