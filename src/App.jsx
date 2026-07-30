@@ -6,7 +6,8 @@ import {
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
-  BellRing, ChevronDown, Phone, MessageCircle, Medal,
+  BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
+  Instagram, Facebook, Music2,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -86,8 +87,21 @@ export async function getSession() {
   return data.session;
 }
 export function onAuthChange(callback) {
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
   return data.subscription;
+}
+
+// ---- Forgot / reset password ----
+// Sends the student an email with a secure link. Clicking it brings them back to
+// this app already signed in to a temporary "recovery" session, at which point
+// updatePassword() below is used to set the new password.
+export async function sendPasswordReset(email) {
+  return supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+  });
+}
+export async function updatePassword(newPassword) {
+  return supabase.auth.updateUser({ password: newPassword });
 }
 
 // ---- Notes (shared, admin-authored) ----
@@ -206,6 +220,15 @@ const CONTACT_WHATSAPP_NUMBERS = [
   { label: "Support Line 1", display: "0309 9675260", wa: "923099675260" },
   { label: "Support Line 2", display: "0301 8869272", wa: "923018869272" },
   { label: "Support Line 3", display: "0325 1171750", wa: "923251171750" },
+];
+
+// Social / community links on the Contact Us page.
+// ⚠️ Placeholder hrefs ("#") — replace with your real links whenever you have them.
+const SOCIAL_LINKS = [
+  { label: "WhatsApp Group", sub: "Join the student community group", icon: Users, color: "#1F9D6B", href: "#" },
+  { label: "Instagram", sub: "Follow us for updates & tips", icon: Instagram, color: "#C2437A", href: "#" },
+  { label: "Facebook", sub: "Like our page", icon: Facebook, color: "#2E63D6", href: "#" },
+  { label: "TikTok", sub: "Watch quick prep videos", icon: Music2, color: "#111111", href: "#" },
 ];
 
 // ---------- Design tokens ----------
@@ -596,6 +619,32 @@ function ComingSoon({ title }) {
         </div>
         <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-2">{title}</h2>
         <p className="text-sm" style={{ color: T.inkSoft }}>This feature is coming soon.</p>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Simple info folder pages: Reviews / Syllabus / Guidelines ----------
+// These render inside Home's navTab switcher, so BottomNav (with its own Home button)
+// is already shown alongside them — see the "reviews"/"syllabus"/"guidelines" cases in Home().
+function InfoFolderPage({ title, icon: Icon, color, onBack, children }) {
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <div className="flex items-center gap-3 mb-6">
+          <div
+            className="flex items-center justify-center shrink-0"
+            style={{ width: 48, height: 48, borderRadius: "50%", background: color }}
+          >
+            <Icon size={22} style={{ color: "#fff" }} />
+          </div>
+          <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">{title}</h1>
+        </div>
+        {children}
       </div>
     </div>
   );
@@ -1034,7 +1083,7 @@ function ContactUsPage({ onBack }) {
         </button>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Contact Us</h1>
         <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Reach out to us on WhatsApp — tap a number to start chatting.</p>
-        <div className="space-y-3">
+        <div className="space-y-3 mb-10">
           {CONTACT_WHATSAPP_NUMBERS.map((c) => (
             <a
               key={c.wa}
@@ -1056,6 +1105,37 @@ function ContactUsPage({ onBack }) {
               </div>
             </a>
           ))}
+        </div>
+
+        <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-1">Follow & Join Us</h2>
+        <p className="text-xs mb-4" style={{ color: T.inkSoft }}>
+          Links will be added soon — tap to update them once ready.
+        </p>
+        <div className="space-y-3">
+          {SOCIAL_LINKS.map((s) => {
+            const Icon = s.icon;
+            return (
+              <a
+                key={s.label}
+                href={s.href}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-4 p-4"
+                style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
+              >
+                <div
+                  className="flex items-center justify-center shrink-0"
+                  style={{ width: 44, height: 44, borderRadius: "50%", background: s.color }}
+                >
+                  <Icon size={20} style={{ color: "#fff" }} />
+                </div>
+                <div>
+                  <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{s.label}</div>
+                  <div className="text-sm" style={{ color: T.inkSoft }}>{s.sub}</div>
+                </div>
+              </a>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -1216,6 +1296,42 @@ function Home({
       </>
     );
   }
+  if (navTab === "reviews") {
+    return (
+      <>
+        <InfoFolderPage title="Reviews" icon={Star} color="#B5822A" onBack={() => setNavTab("profile")}>
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            Student reviews will appear here soon.
+          </div>
+        </InfoFolderPage>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "syllabus") {
+    return (
+      <>
+        <InfoFolderPage title="Syllabus" icon={BookOpen} color="#2E63D6" onBack={() => setNavTab("profile")}>
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            The syllabus breakdown will appear here soon.
+          </div>
+        </InfoFolderPage>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "guidelines") {
+    return (
+      <>
+        <InfoFolderPage title="Guidelines" icon={ClipboardList} color="#1F9D6B" onBack={() => setNavTab("profile")}>
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            Exam & app guidelines will appear here soon.
+          </div>
+        </InfoFolderPage>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
   if (navTab === "settings") {
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
@@ -1258,9 +1374,12 @@ function Home({
   }
   if (navTab === "profile") {
     const menuItems = [
-      { label: "My Progress", sub: "Topics, MCQs & accuracy", icon: TrendingUp, action: () => setNavTab("progress") },
-      { label: "Contact Us", sub: "Chat with us on WhatsApp", icon: Phone, action: () => setNavTab("contact") },
-      { label: "Settings", sub: "Account & admin access", icon: Settings, action: () => setNavTab("settings") },
+      { label: "My Progress", sub: "Topics, MCQs & accuracy", icon: TrendingUp, color: "#2E63D6", action: () => setNavTab("progress") },
+      { label: "Reviews", sub: "See what students are saying", icon: Star, color: "#B5822A", action: () => setNavTab("reviews") },
+      { label: "Syllabus", sub: "Browse the full syllabus", icon: BookOpen, color: "#7C5CD6", action: () => setNavTab("syllabus") },
+      { label: "Guidelines", sub: "Exam & app guidelines", icon: ClipboardList, color: "#1F9D6B", action: () => setNavTab("guidelines") },
+      { label: "Contact Us", sub: "Chat with us on WhatsApp", icon: Phone, color: "#2EA8A0", action: () => setNavTab("contact") },
+      { label: "Settings", sub: "Account & admin access", icon: Settings, color: "#B8493F", action: () => setNavTab("settings") },
     ];
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
@@ -1287,8 +1406,8 @@ function Home({
                   className="w-full flex items-center gap-4 p-4 text-left"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
-                  <div className="flex items-center justify-center shrink-0" style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
-                    <Icon size={18} />
+                  <div className="flex items-center justify-center shrink-0" style={{ width: 40, height: 40, borderRadius: "50%", background: m.color || "rgba(255,255,255,0.08)" }}>
+                    <Icon size={18} style={{ color: "#fff" }} />
                   </div>
                   <div className="flex-1">
                     <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{m.label}</div>
@@ -1491,7 +1610,25 @@ function Home({
 }
 
 // ---------- Program page: choose Subject (or Year for MBBS) ----------
-function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
+// Shared header row: a "Back to X" link on the left, and a "Home" link on the
+// right whenever onHome is provided — so students are never more than one tap
+// away from Home, even deep inside Program → Subject → Topic navigation.
+function BackHomeBar({ onBack, backLabel = "Back", onHome }) {
+  return (
+    <div className="flex items-center justify-between mb-6">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+        <ArrowLeft size={16} /> {backLabel}
+      </button>
+      {onHome && (
+        <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+          <HomeIcon size={16} /> Home
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear, onHome }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
   const isMDCAT = TOPIC_PROGRAMS.includes(program);
@@ -1572,7 +1709,7 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, onBack, onOpenBlock }) {
+function YearPage({ program, year, bank, onBack, onOpenBlock, onHome }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
   const blocks = blockNames.map((name) => ({
@@ -1584,9 +1721,7 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to years
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to years" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year}
         </h1>
@@ -1631,7 +1766,7 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
 }
 
 // ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
-function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
+function BlockPage({ program, year, block, bank, onBack, onOpenSubject, onHome }) {
   const blockQuestions = bank.filter(
     (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
   );
@@ -1645,9 +1780,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to blocks
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to blocks" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year} · {block}
         </h1>
@@ -1695,7 +1828,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
 }
 
 // ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
-function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
+function TopicPage({ program, subject, bank, onBack, onOpenTopic, onHome }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
   const topicNames = MDCAT_TOPICS[subject] || [];
   const topics = topicNames.map((name) => ({
@@ -1707,9 +1840,7 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to subjects
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {subject}
         </h1>
@@ -1752,7 +1883,7 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
 }
 
 // ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart }) {
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -1778,9 +1909,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to subjects
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
           {program}
         </div>
@@ -1853,7 +1982,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 }
 
 // ---------- Quiz ----------
-function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onToggleBookmark }) {
+function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
   const [answerTimes, setAnswerTimes] = useState({});
@@ -1906,9 +2035,16 @@ function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onTo
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
-          <button onClick={onExit} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
-            <ArrowLeft size={16} /> Exit
-          </button>
+          <div className="flex items-center gap-4">
+            <button onClick={onExit} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+              <ArrowLeft size={16} /> Exit
+            </button>
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             {timeLimit ? (
               <div
@@ -2130,7 +2266,7 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
 
 // ---------- Student Auth (Sign up / Log in) ----------
 function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -2141,12 +2277,30 @@ function AuthScreen({ onAuthed }) {
   const [busy, setBusy] = useState(false);
 
   const isLogin = mode === "login";
-  const accent = isLogin ? "#6FA3F5" : "#4CD9A0";
-  const btnBg = isLogin ? T.blue : T.emerald;
+  const isForgot = mode === "forgot";
+  const accent = isForgot ? "#F1C177" : isLogin ? "#6FA3F5" : "#4CD9A0";
+  const btnBg = isForgot ? T.amber : isLogin ? T.blue : T.emerald;
 
   const submit = async () => {
     setError("");
     setNotice("");
+
+    if (isForgot) {
+      if (!email.trim()) {
+        setError("Please enter your email.");
+        return;
+      }
+      setBusy(true);
+      const { error: err } = await sendPasswordReset(email.trim());
+      setBusy(false);
+      if (err) {
+        setError(err.message);
+        return;
+      }
+      setNotice("If an account exists for that email, a reset link has been sent. Check your inbox (and spam folder), then follow the link to set a new password.");
+      return;
+    }
+
     if (!email.trim() || !password.trim()) {
       setError("Please enter both email and password.");
       return;
@@ -2216,17 +2370,19 @@ function AuthScreen({ onAuthed }) {
           className="flex items-center justify-center mb-5"
           style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `1px solid rgba(255,255,255,0.2)` }}
         >
-          {isLogin ? <ShieldCheck size={24} color={accent} /> : <FlaskConical size={24} color={accent} />}
+          {isForgot ? <KeyRound size={24} color={accent} /> : isLogin ? <ShieldCheck size={24} color={accent} /> : <FlaskConical size={24} color={accent} />}
         </div>
 
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: accent }} className="text-3xl mb-1">
-          {isLogin ? "Log in" : "Create your account"}
+          {isForgot ? "Reset your password" : isLogin ? "Log in" : "Create your account"}
         </h1>
         <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
-          {isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
+          {isForgot
+            ? "Enter the email on your account and we'll send you a link to set a new password."
+            : isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
         </p>
 
-        {!isLogin && (
+        {!isLogin && !isForgot && (
           <div className="mb-3">
             <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
               Name
@@ -2261,6 +2417,7 @@ function AuthScreen({ onAuthed }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && isForgot && submit()}
               placeholder="you@example.com"
               className="w-full py-3 outline-none"
               style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
@@ -2268,28 +2425,41 @@ function AuthScreen({ onAuthed }) {
           </div>
         </div>
 
-        <div className="mb-2">
-          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
-            Password
-          </label>
-          <div
-            className="flex items-center gap-2 px-3"
-            style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
-          >
-            <Lock size={14} color={accent} />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="At least 6 characters"
-              className="w-full py-3 outline-none"
-              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
-            />
+        {!isForgot && (
+          <div className="mb-2">
+            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+              Password
+            </label>
+            <div
+              className="flex items-center gap-2 px-3"
+              style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+            >
+              <Lock size={14} color={accent} />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+                placeholder="At least 6 characters"
+                className="w-full py-3 outline-none"
+                style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {!isLogin && (
+        {isLogin && (
+          <button
+            type="button"
+            onClick={() => { setMode("forgot"); setError(""); setNotice(""); }}
+            className="text-xs mt-1 mb-1"
+            style={{ color: "#8FA0C4" }}
+          >
+            Forgot password?
+          </button>
+        )}
+
+        {!isLogin && !isForgot && (
           <div className="mb-2 relative">
             <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
               Course
@@ -2339,15 +2509,130 @@ function AuthScreen({ onAuthed }) {
           className="w-full py-3 text-sm mt-5 disabled:opacity-50 font-medium"
           style={{ background: btnBg, color: "#fff" }}
         >
-          {busy ? "Please wait…" : isLogin ? "Log in" : "Sign up"}
+          {busy ? "Please wait…" : isForgot ? "Send reset link" : isLogin ? "Log in" : "Sign up"}
+        </button>
+
+        {isForgot ? (
+          <button
+            onClick={() => { setMode("login"); setError(""); setNotice(""); }}
+            className="w-full text-sm mt-4"
+            style={{ color: accent }}
+          >
+            Back to log in
+          </button>
+        ) : (
+          <button
+            onClick={() => { setMode(isLogin ? "signup" : "login"); setError(""); setNotice(""); }}
+            className="w-full text-sm mt-4"
+            style={{ color: accent }}
+          >
+            {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Reset Password screen (shown after clicking the emailed reset link) ----------
+function ResetPasswordScreen({ onDone, onSignOutAndCancel }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    const { error: err } = await updatePassword(password);
+    setBusy(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    onDone();
+  };
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center relative overflow-hidden"
+      style={{ background: "linear-gradient(160deg, #0A1B3D, #123A6B 55%, #0A1B3D)", color: "#fff" }}
+    >
+      <FontLoader />
+      <div className="w-full max-w-sm px-6 relative z-10">
+        <div
+          className="flex items-center justify-center mb-5"
+          style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `1px solid rgba(255,255,255,0.2)` }}
+        >
+          <KeyRound size={24} color="#F1C177" />
+        </div>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#F1C177" }} className="text-3xl mb-1">
+          Set a new password
+        </h1>
+        <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
+          You've followed a password reset link. Choose a new password below.
+        </p>
+
+        <div className="mb-3">
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            New password
+          </label>
+          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}>
+            <Lock size={14} color="#F1C177" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="At least 6 characters"
+              className="w-full py-3 outline-none"
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+            />
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            Confirm new password
+          </label>
+          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}>
+            <Lock size={14} color="#F1C177" />
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder="Re-enter new password"
+              className="w-full py-3 outline-none"
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+            />
+          </div>
+        </div>
+
+        {error && <div className="text-sm mt-2" style={{ color: "#F5A3A3" }}>{error}</div>}
+
+        <button
+          onClick={submit}
+          disabled={busy}
+          className="w-full py-3 text-sm mt-5 disabled:opacity-50 font-medium"
+          style={{ background: T.amber, color: "#fff" }}
+        >
+          {busy ? "Please wait…" : "Update password"}
         </button>
 
         <button
-          onClick={() => { setMode(isLogin ? "signup" : "login"); setError(""); setNotice(""); }}
+          onClick={onSignOutAndCancel}
           className="w-full text-sm mt-4"
-          style={{ color: accent }}
+          style={{ color: "#8FA0C4" }}
         >
-          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+          Cancel and sign out
         </button>
       </div>
     </div>
@@ -3300,6 +3585,7 @@ export default function App() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -3307,8 +3593,9 @@ export default function App() {
       setUser(session?.user || null);
       setAuthChecked(true);
     })();
-    const sub = onAuthChange((session) => {
+    const sub = onAuthChange((session, event) => {
       setUser(session?.user || null);
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
     });
     return () => sub?.unsubscribe && sub.unsubscribe();
   }, []);
@@ -3488,6 +3775,19 @@ export default function App() {
     );
   }
 
+  if (passwordRecovery && user) {
+    return (
+      <ResetPasswordScreen
+        onDone={() => setPasswordRecovery(false)}
+        onSignOutAndCancel={async () => {
+          await signOut();
+          setUser(null);
+          setPasswordRecovery(false);
+        }}
+      />
+    );
+  }
+
   if (!user) {
     return <AuthScreen onAuthed={(session) => setUser(session.user)} />;
   }
@@ -3550,6 +3850,7 @@ export default function App() {
         onBack={() => setView("home")}
         onOpenSubject={openSubject}
         onOpenYear={openYear}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3561,6 +3862,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("program")}
         onOpenBlock={openBlock}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3573,6 +3875,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("year")}
         onOpenSubject={openSubject}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3584,6 +3887,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("program")}
         onOpenTopic={openTopic}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3598,6 +3902,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView(program === "MBBS" ? "block" : TOPIC_PROGRAMS.includes(program) ? "topic" : "program")}
         onStart={startQuiz}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3611,6 +3916,7 @@ export default function App() {
         onToggleBookmark={toggleBookmark}
         onFinish={finishQuiz}
         onExit={() => setView(quizMeta.mode === "normal" ? "subject" : "home")}
+        onHome={() => setView("home")}
       />
     );
   }
