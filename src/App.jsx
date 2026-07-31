@@ -6,28 +6,24 @@ import {
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
-  BellRing, ChevronDown,
+  BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
+  Instagram, Facebook, Music2,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
-// =====================================================================
-// Supabase client + data helpers (merged into this single file so there's
-// only one file to paste — this used to live in a separate supabase.js)
-// =====================================================================
+// ============================================================================
+// SUPABASE CLIENT + DATA HELPERS
+// (merged into this single file so there's only one file to place in src/)
+// ============================================================================
 // 1. Go to https://supabase.com → New project (free, no card needed)
 // 2. Project settings → API → copy "Project URL" and "anon public" key below
 const SUPABASE_URL = "https://ehkrddewmmilogbojvkh.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---- Shared data (question bank + admin passcode) stored in one row ----
-// IMPORTANT: this returns { data, failed } instead of just the row. That distinction
-// matters — a genuinely empty table (first run) must be treated differently from a
-// network/Supabase error, otherwise a temporary blip can look like "there's no bank yet"
-// and trigger a reseed that wipes out admin's edits (e.g. a deleted MCQ reappearing for
-// everyone once that reseed gets saved back to the shared row).
-async function loadSharedData() {
+export async function loadSharedData() {
   try {
     const { data, error } = await supabase
       .from("app_data")
@@ -35,35 +31,26 @@ async function loadSharedData() {
       .eq("id", 1)
       .maybeSingle();
     if (error) throw error;
-    return { data: data || null, failed: false };
+    return data || null;
   } catch (e) {
     console.error("Supabase load failed:", e);
-    return { data: null, failed: true };
+    return null;
   }
 }
 
-async function saveSharedData(partial) {
+export async function saveSharedData(partial) {
   try {
-    const { data, failed } = await loadSharedData();
-    if (failed) {
-      // We couldn't confirm the current row — still attempt the write (Supabase will
-      // just update the given columns), but don't let a bad read wipe out columns we
-      // never fetched successfully.
-      console.warn("Saving without a confirmed current row (previous read failed).");
-    }
-    const current = data || {};
+    const current = (await loadSharedData()) || {};
     const merged = { id: 1, ...current, ...partial };
     const { error } = await supabase.from("app_data").upsert(merged);
     if (error) throw error;
-    return true;
   } catch (e) {
     console.error("Supabase save failed:", e);
-    return false;
   }
 }
 
 // ---- Personal stats: stored locally in the student's own browser ----
-function loadLocalStats() {
+export function loadLocalStats() {
   try {
     const raw = localStorage.getItem("mdcat-my-stats");
     return raw ? JSON.parse(raw) : null;
@@ -72,7 +59,7 @@ function loadLocalStats() {
   }
 }
 
-function saveLocalStats(stats) {
+export function saveLocalStats(stats) {
   try {
     localStorage.setItem("mdcat-my-stats", JSON.stringify(stats));
   } catch {}
@@ -82,63 +69,44 @@ function saveLocalStats(stats) {
 // extra = { name, course } gets saved on the auth user as user_metadata,
 // so user.user_metadata.name / user.user_metadata.course are available
 // right after sign up / sign in, with no extra database table needed.
-async function signUp(email, password, extra = {}) {
+export async function signUp(email, password, extra = {}) {
   return supabase.auth.signUp({
     email,
     password,
     options: { data: { name: extra.name || "", course: extra.course || "" } },
   });
 }
-async function signIn(email, password) {
+export async function signIn(email, password) {
   return supabase.auth.signInWithPassword({ email, password });
 }
-async function signOut() {
+export async function signOut() {
   return supabase.auth.signOut();
 }
-async function getSession() {
+export async function getSession() {
   const { data } = await supabase.auth.getSession();
   return data.session;
 }
-function onAuthChange(callback) {
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+export function onAuthChange(callback) {
+  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
   return data.subscription;
 }
 
-// ---- Install marker (used to force logout after an uninstall + reinstall) ----
-// A logged-in Supabase session is normally kept in localStorage so a returning user
-// stays logged in — that's expected and fine. The problem is that some Android
-// app-wrapper/backup mechanisms restore that same localStorage after the app is
-// uninstalled and reinstalled, so the user looks "still logged in" even though they
-// removed the app. Cache Storage entries are written by the app itself (not part of
-// that backup/restore path), so we use one as a witness: if a session exists but this
-// marker doesn't, we treat it as a fresh install and sign the stale session out.
-const INSTALL_MARKER_CACHE = "app-install-marker-v1";
-const INSTALL_MARKER_KEY = "https://install-marker.local/marker";
-
-async function hasInstallMarker() {
-  try {
-    if (typeof caches === "undefined") return true; // unsupported env — don't force logout
-    const cache = await caches.open(INSTALL_MARKER_CACHE);
-    const match = await cache.match(INSTALL_MARKER_KEY);
-    return !!match;
-  } catch {
-    return true; // fail-safe: never force-logout because of an unrelated error
-  }
+// ---- Forgot / reset password ----
+// Sends the student an email with a secure link. Clicking it brings them back to
+// this app already signed in to a temporary "recovery" session, at which point
+// updatePassword() below is used to set the new password.
+export async function sendPasswordReset(email) {
+  return supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+  });
 }
-
-async function setInstallMarker() {
-  try {
-    if (typeof caches === "undefined") return;
-    const cache = await caches.open(INSTALL_MARKER_CACHE);
-    await cache.put(INSTALL_MARKER_KEY, new Response("installed"));
-  } catch {
-    // non-fatal
-  }
+export async function updatePassword(newPassword) {
+  return supabase.auth.updateUser({ password: newPassword });
 }
 
 // ---- Notes (shared, admin-authored) ----
 // Requires a `notes` jsonb column on the `app_data` table (default value []).
-async function loadNotes() {
+export async function loadNotes() {
   try {
     const { data, error } = await supabase.from("app_data").select("notes").eq("id", 1).maybeSingle();
     if (error) throw error;
@@ -148,20 +116,18 @@ async function loadNotes() {
     return [];
   }
 }
-async function saveNotes(notes) {
+export async function saveNotes(notes) {
   try {
     const { error } = await supabase.from("app_data").update({ notes }).eq("id", 1);
     if (error) throw error;
-    return true;
   } catch (e) {
     console.error("Save notes failed (add a 'notes' jsonb column to app_data):", e);
-    return false;
   }
 }
 
 // ---- Notifications (shared, admin-authored) ----
 // Requires a `notifications` jsonb column on the `app_data` table (default value []).
-async function loadNotifications() {
+export async function loadNotifications() {
   try {
     const { data, error } = await supabase.from("app_data").select("notifications").eq("id", 1).maybeSingle();
     if (error) throw error;
@@ -171,23 +137,126 @@ async function loadNotifications() {
     return [];
   }
 }
-async function saveNotifications(notifications) {
+export async function saveNotifications(notifications) {
   try {
     const { error } = await supabase.from("app_data").update({ notifications }).eq("id", 1);
     if (error) throw error;
-    return true;
   } catch (e) {
     console.error("Save notifications failed (add a 'notifications' jsonb column to app_data):", e);
-    return false;
+  }
+}
+
+// ---- Reviews (public — any signed-in student can add one, everyone can read) ----
+// Requires a `reviews` jsonb column on the `app_data` table (default value []).
+export async function loadReviews() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("reviews").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.reviews) || [];
+  } catch (e) {
+    console.error("Load reviews failed (add a 'reviews' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveReviews(reviews) {
+  try {
+    const { error } = await supabase.from("app_data").update({ reviews }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save reviews failed (add a 'reviews' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Syllabus items (admin-authored: links, PDFs, or text blocks) ----
+// Requires a `syllabus` jsonb column on the `app_data` table (default value []).
+export async function loadSyllabusItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("syllabus").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.syllabus) || [];
+  } catch (e) {
+    console.error("Load syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveSyllabusItems(syllabus) {
+  try {
+    const { error } = await supabase.from("app_data").update({ syllabus }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Guideline items (admin-authored: links, PDFs, or text blocks) ----
+// Requires a `guidelines` jsonb column on the `app_data` table (default value []).
+export async function loadGuidelineItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("guidelines").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.guidelines) || [];
+  } catch (e) {
+    console.error("Load guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveGuidelineItems(guidelines) {
+  try {
+    const { error } = await supabase.from("app_data").update({ guidelines }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Contact items (admin-authored links: WhatsApp, phone, email, groups, etc.) ----
+// Requires a `contact_items` jsonb column on the `app_data` table (default value []).
+export async function loadContactItems() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("contact_items").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.contact_items) || [];
+  } catch (e) {
+    console.error("Load contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveContactItems(contact_items) {
+  try {
+    const { error } = await supabase.from("app_data").update({ contact_items }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+  }
+}
+
+// ---- Social links (admin-authored URLs for the fixed WhatsApp Group / Instagram / Facebook / TikTok cards) ----
+// Requires a `social_links` jsonb column on the `app_data` table (default value {}).
+export async function loadSocialLinksMap() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("social_links").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.social_links) || {};
+  } catch (e) {
+    console.error("Load social links failed (add a 'social_links' jsonb column to app_data):", e);
+    return {};
+  }
+}
+export async function saveSocialLinksMap(social_links) {
+  try {
+    const { error } = await supabase.from("app_data").update({ social_links }).eq("id", 1);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save social links failed (add a 'social_links' jsonb column to app_data):", e);
   }
 }
 
 // ---- Per-user stats (each student's own score, tied to their account) ----
-async function loadUserStats(userId) {
+export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, streak, last_challenge_date")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -198,8 +267,10 @@ async function loadUserStats(userId) {
       bySubject: data.by_subject || {},
       bookmarks: data.bookmarks || [],
       wrongIds: data.wrong_ids || [],
+      slowIds: data.slow_ids || [],
       streak: data.streak || 0,
       lastChallengeDate: data.last_challenge_date || null,
+      name: data.name || "",
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -207,7 +278,7 @@ async function loadUserStats(userId) {
   }
 }
 
-async function saveUserStats(userId, stats) {
+export async function saveUserStats(userId, stats) {
   try {
     const { error } = await supabase.from("user_stats").upsert({
       user_id: userId,
@@ -216,17 +287,47 @@ async function saveUserStats(userId, stats) {
       by_subject: stats.bySubject,
       bookmarks: stats.bookmarks || [],
       wrong_ids: stats.wrongIds || [],
+      slow_ids: stats.slowIds || [],
       streak: stats.streak || 0,
       last_challenge_date: stats.lastChallengeDate || null,
+      name: stats.name || "",
     });
     if (error) throw error;
   } catch (e) {
     console.error("Save user stats failed:", e);
   }
 }
-// =====================================================================
-// End of Supabase helpers
-// =====================================================================
+
+// ---- Leaderboard (reads every student's aggregate stats) ----
+// Requires a `name` text column and a `slow_ids` jsonb column (default []) on `user_stats`,
+// plus a Supabase RLS policy that allows SELECT on user_stats to any signed-in user
+// (by default a student can usually only read their own row).
+export async function loadLeaderboard(limit = 50) {
+  try {
+    const { data, error } = await supabase
+      .from("user_stats")
+      .select("name, total_attempted, total_correct")
+      .order("total_correct", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return (data || []).filter((r) => r.name && r.name.trim());
+  } catch (e) {
+    console.error("Load leaderboard failed (check RLS policy + columns on user_stats):", e);
+    return [];
+  }
+}
+// ============================================================================
+// END SUPABASE SECTION
+// ============================================================================
+
+// Social / community links on the Contact Us page.
+// ⚠️ Placeholder hrefs ("#") — replace with your real links whenever you have them.
+const SOCIAL_LINKS = [
+  { label: "WhatsApp Group", sub: "Join the student community group", icon: Users, color: "#1F9D6B", href: "#" },
+  { label: "Instagram", sub: "Follow us for updates & tips", icon: Instagram, color: "#C2437A", href: "#" },
+  { label: "Facebook", sub: "Like our page", icon: Facebook, color: "#2E63D6", href: "#" },
+  { label: "TikTok", sub: "Watch quick prep videos", icon: Music2, color: "#111111", href: "#" },
+];
 
 // ---------- Design tokens ----------
 const T = {
@@ -410,22 +511,19 @@ const SEED_MCQS = [
 ];
 
 // ---------- Storage helpers (Supabase = shared, localStorage = personal fallback) ----------
-// loadBank returns { bank, failed }. `failed` must be checked before deciding to reseed —
-// a network hiccup is NOT the same thing as "the bank is genuinely empty", and treating it
-// that way is what previously caused deleted MCQs to silently reappear for everyone.
 async function loadBank() {
-  const { data, failed } = await loadSharedData();
-  return { bank: data && data.bank ? data.bank : null, failed };
+  const data = await loadSharedData();
+  return data && data.bank ? data.bank : null;
 }
 async function saveBank(bank) {
-  return saveSharedData({ bank });
+  await saveSharedData({ bank });
 }
 async function loadPasscode() {
-  const { data, failed } = await loadSharedData();
-  return { passcode: data && data.passcode ? data.passcode : null, failed };
+  const data = await loadSharedData();
+  return data && data.passcode ? data.passcode : null;
 }
 async function savePasscode(pc) {
-  return saveSharedData({ passcode: pc });
+  await saveSharedData({ passcode: pc });
 }
 
 // ---------- Bulk PDF -> AI MCQ extraction helpers ----------
@@ -624,12 +722,241 @@ function ComingSoon({ title }) {
   );
 }
 
+// ---------- Simple info folder pages: Reviews / Syllabus / Guidelines ----------
+// These render inside Home's navTab switcher, so BottomNav (with its own Home button)
+// is already shown alongside them — see the "reviews"/"syllabus"/"guidelines" cases in Home().
+function InfoFolderPage({ title, icon: Icon, color, onBack, children }) {
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <div className="flex items-center gap-3 mb-6">
+          <div
+            className="flex items-center justify-center shrink-0"
+            style={{ width: 48, height: 48, borderRadius: "50%", background: color }}
+          >
+            <Icon size={22} style={{ color: "#fff" }} />
+          </div>
+          <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">{title}</h1>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Generic admin-editable content list (used for Syllabus & Guidelines) ----------
+// Everyone can read the items. The "+ Add item" form only renders when isAdmin is true.
+function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRemove, onBack, emptyText, addLabel }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", type: "link", value: "" });
+
+  const submit = async () => {
+    if (!form.title.trim() || !form.value.trim()) {
+      alert(`Please fill in the title and ${form.type === "text" ? "content" : "link"}.`);
+      return;
+    }
+    await onAdd({ title: form.title.trim(), type: form.type, value: form.value.trim() });
+    setForm({ title: "", type: "link", value: "" });
+    setShowForm(false);
+  };
+
+  return (
+    <InfoFolderPage title={title} icon={Icon} color={color} onBack={onBack}>
+      {isAdmin && (
+        <div className="mb-6">
+          {!showForm ? (
+            <button
+              onClick={() => setShowForm(true)}
+              className="flex items-center gap-2 text-sm px-4 py-2"
+              style={{ background: T.ink, color: T.paper }}
+            >
+              <Plus size={14} /> {addLabel || "Add item"}
+            </button>
+          ) : (
+            <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <input
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                placeholder="Title"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+              />
+              <div className="flex gap-2">
+                {["link", "pdf", "text"].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setForm({ ...form, type: t })}
+                    className="px-3 py-1.5 text-xs uppercase"
+                    style={{
+                      border: `1px solid ${T.ink}`,
+                      background: form.type === t ? T.ink : "transparent",
+                      color: form.type === t ? T.paper : T.ink,
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              {form.type === "text" ? (
+                <textarea
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  rows={4}
+                  placeholder="Write the content…"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+              ) : (
+                <input
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  placeholder={form.type === "pdf" ? "PDF link (e.g. Google Drive share link)" : "https://…"}
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+              )}
+              <div className="flex gap-2">
+                <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                  Save
+                </button>
+                <button
+                  onClick={() => { setShowForm(false); setForm({ title: "", type: "link", value: "" }); }}
+                  className="px-4 py-2 text-sm"
+                  style={{ border: `1px solid ${T.ink}` }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(!items || items.length === 0) ? (
+        <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>{emptyText}</div>
+      ) : (
+        <div className="space-y-3">
+          {items.map((it) => (
+            <div key={it.id} className="p-4 flex items-start justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="flex-1 min-w-0">
+                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="mb-1">{it.title}</div>
+                {it.type === "text" ? (
+                  <div className="text-sm whitespace-pre-wrap" style={{ color: T.inkSoft }}>{it.value}</div>
+                ) : (
+                  <a href={it.value} target="_blank" rel="noreferrer" className="text-sm break-all" style={{ color: "#6FA3F5" }}>
+                    {it.type === "pdf" ? "📄 " : "🔗 "}{it.value}
+                  </a>
+                )}
+              </div>
+              {isAdmin && (
+                <button onClick={() => onRemove(it.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </InfoFolderPage>
+  );
+}
+
+// ---------- Reviews: every signed-in student can post one, everyone can read all of them ----------
+function ReviewsPage({ onBack, reviews, userName, onAdd }) {
+  const [showForm, setShowForm] = useState(false);
+  const [rating, setRating] = useState(5);
+  const [text, setText] = useState("");
+
+  const submit = async () => {
+    if (!text.trim()) {
+      alert("Please write a short review first.");
+      return;
+    }
+    await onAdd({ name: userName || "Student", rating, text: text.trim() });
+    setText("");
+    setRating(5);
+    setShowForm(false);
+  };
+
+  const sorted = [...(reviews || [])].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  return (
+    <InfoFolderPage title="Reviews" icon={Star} color="#B5822A" onBack={onBack}>
+      <div className="mb-6">
+        {!showForm ? (
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 text-sm px-4 py-2"
+            style={{ background: T.ink, color: T.paper }}
+          >
+            <Plus size={14} /> Write a review
+          </button>
+        ) : (
+          <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} onClick={() => setRating(n)}>
+                  <Star size={22} style={{ color: n <= rating ? T.amber : T.inkSoft }} fill={n <= rating ? T.amber : "none"} />
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={3}
+              placeholder="Share your experience…"
+              className="w-full px-3 py-2"
+              style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+            />
+            <div className="flex gap-2">
+              <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
+                Post review
+              </button>
+              <button onClick={() => setShowForm(false)} className="px-4 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {sorted.length === 0 ? (
+        <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+          No reviews yet — be the first to share your experience!
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {sorted.map((r) => (
+            <div key={r.id} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="flex items-center justify-between mb-1">
+                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</div>
+                <div className="flex items-center gap-0.5">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Star key={n} size={13} style={{ color: n <= r.rating ? T.amber : T.inkSoft }} fill={n <= r.rating ? T.amber : "none"} />
+                  ))}
+                </div>
+              </div>
+              <div className="text-sm" style={{ color: T.inkSoft }}>{r.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </InfoFolderPage>
+  );
+}
+
 // ---------- Notes: browse by program -> subject -> note ----------
-function NotesFlow({ notesBank, programs, onExit }) {
+function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
   // step: "program" (only shown if the student has more than one visible program) -> "subject" -> "note"
   const [prog, setProg] = useState(programs.length === 1 ? programs[0].key : null);
   const [subject, setSubject] = useState(null);
   const [noteId, setNoteId] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newNote, setNewNote] = useState({ title: "", content: "" });
 
   const notesForProg = (notesBank || []).filter((n) => n.program === prog);
   const subjects = useMemo(() => {
@@ -702,6 +1029,63 @@ function NotesFlow({ notesBank, programs, onExit }) {
             <ArrowLeft size={16} /> Back to subjects
           </button>
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">{subject}</h1>
+
+          {isAdmin && (
+            <div className="mb-6">
+              {!showAddForm ? (
+                <button
+                  onClick={() => setShowAddForm(true)}
+                  className="flex items-center gap-2 text-sm px-4 py-2"
+                  style={{ background: T.ink, color: T.paper }}
+                >
+                  <Plus size={14} /> Add note here
+                </button>
+              ) : (
+                <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <input
+                    value={newNote.title}
+                    onChange={(e) => setNewNote({ ...newNote, title: e.target.value })}
+                    placeholder="Note title"
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                  />
+                  <textarea
+                    value={newNote.content}
+                    onChange={(e) => setNewNote({ ...newNote, content: e.target.value })}
+                    rows={6}
+                    placeholder="Write or paste the note content…"
+                    className="w-full px-3 py-2"
+                    style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!newNote.title.trim() || !newNote.content.trim()) {
+                          alert("Please fill in the title and content.");
+                          return;
+                        }
+                        await onAddNote(prog, subject, newNote.title.trim(), newNote.content.trim());
+                        setNewNote({ title: "", content: "" });
+                        setShowAddForm(false);
+                      }}
+                      className="px-4 py-2 text-sm"
+                      style={{ background: T.emerald, color: "#fff" }}
+                    >
+                      Save note
+                    </button>
+                    <button
+                      onClick={() => { setShowAddForm(false); setNewNote({ title: "", content: "" }); }}
+                      className="px-4 py-2 text-sm"
+                      style={{ border: `1px solid ${T.ink}` }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {list.length === 0 ? (
             <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>No notes here yet.</div>
           ) : (
@@ -963,11 +1347,277 @@ function NotificationsOverlay({ notifications, onClose }) {
   );
 }
 
+// ---------- Leaderboard ----------
+function LeaderboardView({ onBack, currentUserName }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const data = await loadLeaderboard(50);
+      setRows(data);
+      setError(data.length === 0);
+      setLoading(false);
+    })();
+  }, []);
+
+  const medalColor = (i) => (i === 0 ? "#D4AF37" : i === 1 ? "#B7C0C7" : i === 2 ? "#C9793C" : T.inkSoft);
+
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1 flex items-center gap-2">
+          <Trophy size={22} style={{ color: T.amber }} /> Leaderboard
+        </h1>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers across all students.</p>
+
+        {loading && <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>}
+
+        {!loading && error && (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No leaderboard data yet — start practicing to appear here! (If this stays empty, ask
+            whoever manages Supabase to confirm the <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>user_stats</code> table
+            has a <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>name</code> column and a read policy.)
+          </div>
+        )}
+
+        {!loading && rows.length > 0 && (
+          <div className="space-y-2">
+            {rows.map((r, i) => {
+              const acc = r.total_attempted > 0 ? Math.round((r.total_correct / r.total_attempted) * 100) : 0;
+              const isMe = currentUserName && r.name === currentUserName;
+              return (
+                <div
+                  key={i}
+                  className="flex items-center gap-4 p-3"
+                  style={{
+                    background: isMe ? T.blueSoft : T.card,
+                    border: `1px solid ${isMe ? T.blue : T.line}`,
+                  }}
+                >
+                  <div className="flex items-center justify-center shrink-0" style={{ width: 28 }}>
+                    {i < 3 ? (
+                      <Medal size={20} style={{ color: medalColor(i) }} />
+                    ) : (
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }} className="text-sm">
+                        {i + 1}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className="truncate"
+                      style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600, color: isMe ? T.paper : T.ink }}
+                    >
+                      {r.name}{isMe ? " (You)" : ""}
+                    </div>
+                    <div className="text-xs" style={{ color: isMe ? "#1F3A66" : T.inkSoft }}>
+                      {r.total_correct} correct · {r.total_attempted} attempted · {acc}% accuracy
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Contact Us ----------
+function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveContact, socialLinks, onUpdateSocialLink }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", value: "" });
+  const [editingSocial, setEditingSocial] = useState(null);
+  const [socialUrl, setSocialUrl] = useState("");
+
+  const submit = async () => {
+    if (!form.title.trim() || !form.value.trim()) {
+      alert("Please fill in the label and the WhatsApp number / link.");
+      return;
+    }
+    await onAddContact({ title: form.title.trim(), value: form.value.trim() });
+    setForm({ title: "", value: "" });
+    setShowForm(false);
+  };
+
+  const startEditSocial = (label) => {
+    setEditingSocial(label);
+    setSocialUrl((socialLinks && socialLinks[label]) || "");
+  };
+  const saveSocial = async (label) => {
+    await onUpdateSocialLink(label, socialUrl.trim());
+    setEditingSocial(null);
+  };
+
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-md mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Contact Us</h1>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Reach out to us — tap a link below to start chatting.</p>
+
+        {isAdmin && (
+          <div className="mb-4">
+            {!showForm ? (
+              <button
+                onClick={() => setShowForm(true)}
+                className="flex items-center gap-2 text-sm px-4 py-2"
+                style={{ background: T.ink, color: T.paper }}
+              >
+                <Plus size={14} /> Add contact link
+              </button>
+            ) : (
+              <div className="p-4 space-y-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                <input
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  placeholder="Label (e.g. Support Line 1)"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+                <input
+                  value={form.value}
+                  onChange={(e) => setForm({ ...form, value: e.target.value })}
+                  placeholder="https://wa.me/92XXXXXXXXXX or any link"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+                <div className="flex gap-2">
+                  <button onClick={submit} className="px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>Save</button>
+                  <button
+                    onClick={() => { setShowForm(false); setForm({ title: "", value: "" }); }}
+                    className="px-4 py-2 text-sm"
+                    style={{ border: `1px solid ${T.ink}` }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Non-admin students only see this block if there's actually something to show */}
+        {(isAdmin || (contactItems && contactItems.length > 0)) && (
+          (!contactItems || contactItems.length === 0) ? (
+            <div className="p-6 text-sm mb-10" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+              No contact links added yet.
+            </div>
+          ) : (
+            <div className="space-y-3 mb-10">
+              {contactItems.map((c) => (
+                <div key={c.id} className="flex items-center gap-3">
+                  <a
+                    href={c.value}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center gap-4 p-4 min-w-0"
+                    style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink }}
+                  >
+                    <div
+                      className="flex items-center justify-center shrink-0"
+                      style={{ width: 44, height: 44, borderRadius: "50%", background: T.emerald }}
+                    >
+                      <MessageCircle size={20} style={{ color: "#fff" }} />
+                    </div>
+                    <div className="min-w-0">
+                      <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{c.title}</div>
+                      <div className="text-sm truncate" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{c.value}</div>
+                    </div>
+                  </a>
+                  {isAdmin && (
+                    <button onClick={() => onRemoveContact(c.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        )}
+
+        <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-1">Follow & Join Us</h2>
+        {isAdmin && (
+          <p className="text-xs mb-4" style={{ color: T.inkSoft }}>
+            Tap the pencil on any card below to set or update its link.
+          </p>
+        )}
+        <div className="space-y-3">
+          {SOCIAL_LINKS.map((s) => {
+            const Icon = s.icon;
+            const url = (socialLinks && socialLinks[s.label]) || "";
+            const isEditing = editingSocial === s.label;
+            return (
+              <div key={s.label}>
+                <div className="flex items-center gap-3">
+                  <a
+                    href={url || "#"}
+                    target={url ? "_blank" : undefined}
+                    rel="noreferrer"
+                    onClick={(e) => { if (!url) e.preventDefault(); }}
+                    className="flex-1 flex items-center gap-4 p-4 min-w-0"
+                    style={{ background: T.card, border: `1px solid ${T.line}`, textDecoration: "none", color: T.ink, opacity: url ? 1 : 0.6 }}
+                  >
+                    <div
+                      className="flex items-center justify-center shrink-0"
+                      style={{ width: 44, height: 44, borderRadius: "50%", background: s.color }}
+                    >
+                      <Icon size={20} style={{ color: "#fff" }} />
+                    </div>
+                    <div className="min-w-0">
+                      <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{s.label}</div>
+                      <div className="text-sm truncate" style={{ color: T.inkSoft }}>{url || s.sub}</div>
+                    </div>
+                  </a>
+                  {isAdmin && (
+                    <button onClick={() => startEditSocial(s.label)} className="p-2 shrink-0" style={{ border: `1px solid ${T.ink}` }}>
+                      <Pencil size={14} />
+                    </button>
+                  )}
+                </div>
+                {isAdmin && isEditing && (
+                  <div className="p-3 mt-2 flex gap-2" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <input
+                      value={socialUrl}
+                      onChange={(e) => setSocialUrl(e.target.value)}
+                      placeholder="https://…"
+                      className="flex-1 px-3 py-2 text-sm"
+                      style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                    />
+                    <button onClick={() => saveSocial(s.label)} className="px-3 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>Save</button>
+                    <button onClick={() => setEditingSocial(null)} className="px-3 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>Cancel</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Home: dashboard ----------
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
-  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved,
-  notesBank, notifications,
+  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard,
+  notesBank, notifications, isAdmin,
+  reviews, onAddReview,
+  syllabusItems, onAddSyllabus, onRemoveSyllabus,
+  guidelineItems, onAddGuideline, onRemoveGuideline,
+  contactItems, onAddContact, onRemoveContact,
+  socialLinks, onUpdateSocialLink,
+  onAddNote,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1013,7 +1663,7 @@ function Home({
   if (navTab === "notes") {
     return (
       <>
-        <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} />
+        <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} isAdmin={isAdmin} onAddNote={onAddNote} />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
     );
@@ -1083,7 +1733,148 @@ function Home({
       </div>
     );
   }
+  if (navTab === "progress") {
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-md mx-auto px-6 py-10">
+          <button onClick={() => setNavTab("profile")} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Your Progress</h2>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
+          </div>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
+          </div>
+          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
+            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
+          </div>
+        </div>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </div>
+    );
+  }
+  if (navTab === "contact") {
+    return (
+      <>
+        <ContactUsPage
+          onBack={() => setNavTab("profile")}
+          contactItems={contactItems}
+          isAdmin={isAdmin}
+          onAddContact={onAddContact}
+          onRemoveContact={onRemoveContact}
+          socialLinks={socialLinks}
+          onUpdateSocialLink={onUpdateSocialLink}
+        />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "reviews") {
+    return (
+      <>
+        <ReviewsPage
+          onBack={() => setNavTab("profile")}
+          reviews={reviews}
+          userName={userName}
+          onAdd={onAddReview}
+        />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "syllabus") {
+    return (
+      <>
+        <ContentListPage
+          title="Syllabus"
+          icon={BookOpen}
+          color="#2E63D6"
+          onBack={() => setNavTab("profile")}
+          items={syllabusItems}
+          isAdmin={isAdmin}
+          onAdd={onAddSyllabus}
+          onRemove={onRemoveSyllabus}
+          addLabel="Add syllabus item"
+          emptyText="The syllabus breakdown will appear here soon."
+        />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "guidelines") {
+    return (
+      <>
+        <ContentListPage
+          title="Guidelines"
+          icon={ClipboardList}
+          color="#1F9D6B"
+          onBack={() => setNavTab("profile")}
+          items={guidelineItems}
+          isAdmin={isAdmin}
+          onAdd={onAddGuideline}
+          onRemove={onRemoveGuideline}
+          addLabel="Add guideline item"
+          emptyText="Exam & app guidelines will appear here soon."
+        />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </>
+    );
+  }
+  if (navTab === "settings") {
+    return (
+      <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+        <FontLoader />
+        <div className="max-w-md mx-auto px-6 py-10">
+          <button onClick={() => setNavTab("profile")} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">Settings</h2>
+          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <div className="text-sm mb-1" style={{ color: T.inkSoft }}>Signed in as</div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{userName || "Student"}</div>
+            <div className="text-sm" style={{ color: T.inkSoft }}>{userEmail}</div>
+            {userCourse && (
+              <p className="text-xs mt-2 inline-flex px-2 py-1" style={{ color: T.blue, background: T.blueSoft, borderRadius: 6 }}>
+                {userCourse} student
+              </p>
+            )}
+          </div>
+          {showAdminEntry && (
+            <button
+              onClick={onOpenAdmin}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm mb-3"
+              style={{ border: `1px solid ${T.ink}` }}
+            >
+              <Lock size={14} /> Admin sign-in
+            </button>
+          )}
+          <button
+            onClick={onSignOut}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
+            style={{ border: `1px solid ${T.rose}`, color: T.rose }}
+          >
+            <LogOut size={14} /> Sign out
+          </button>
+        </div>
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      </div>
+    );
+  }
   if (navTab === "profile") {
+    const menuItems = [
+      { label: "My Progress", sub: "Topics, MCQs & accuracy", icon: TrendingUp, color: "#2E63D6", action: () => setNavTab("progress") },
+      { label: "Reviews", sub: "See what students are saying", icon: Star, color: "#B5822A", action: () => setNavTab("reviews") },
+      { label: "Syllabus", sub: "Browse the full syllabus", icon: BookOpen, color: "#7C5CD6", action: () => setNavTab("syllabus") },
+      { label: "Guidelines", sub: "Exam & app guidelines", icon: ClipboardList, color: "#1F9D6B", action: () => setNavTab("guidelines") },
+      { label: "Contact Us", sub: "Chat with us on WhatsApp", icon: Phone, color: "#2EA8A0", action: () => setNavTab("contact") },
+      { label: "Settings", sub: showAdminEntry ? "Account & admin access" : "Account settings", icon: Settings, color: "#B8493F", action: () => setNavTab("settings") },
+    ];
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
@@ -1098,27 +1889,30 @@ function Home({
             </p>
           )}
           {!userCourse && <div className="mb-6" />}
-          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>Topics completed</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{topicsCompleted}</div>
+
+          <div className="space-y-2 mb-6">
+            {menuItems.map((m) => {
+              const Icon = m.icon;
+              return (
+                <button
+                  key={m.label}
+                  onClick={m.action}
+                  className="w-full flex items-center gap-4 p-4 text-left"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div className="flex items-center justify-center shrink-0" style={{ width: 40, height: 40, borderRadius: "50%", background: m.color || "rgba(255,255,255,0.08)" }}>
+                    <Icon size={18} style={{ color: "#fff" }} />
+                  </div>
+                  <div className="flex-1">
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{m.label}</div>
+                    <div className="text-xs" style={{ color: T.inkSoft }}>{m.sub}</div>
+                  </div>
+                  <ChevronRight size={16} style={{ color: T.inkSoft }} />
+                </button>
+              );
+            })}
           </div>
-          <div className="p-5 mb-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>MCQs attempted</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{attempted}</div>
-          </div>
-          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
-            <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
-          </div>
-          {showAdminEntry && (
-            <button
-              onClick={onOpenAdmin}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm mb-3"
-              style={{ border: `1px solid ${T.ink}` }}
-            >
-              <Lock size={14} /> Admin sign-in
-            </button>
-          )}
+
           <button
             onClick={onSignOut}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
@@ -1253,9 +2047,9 @@ function Home({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
           {[
             { label: "Daily Challenge", sub: stats?.streak ? `🔥 ${stats.streak} day streak` : "Test your knowledge daily", icon: ClipboardCheck, action: onDailyChallenge },
-            { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("profile") },
+            { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("progress") },
             { label: "Weak Topics", sub: `${stats?.wrongIds?.length || 0} to review`, icon: RotateCcw, action: onReviewMistakes },
-            { label: "Leaderboard", sub: "Compete & be the best", icon: Trophy, action: () => soon("Leaderboard") },
+            { label: "Leaderboard", sub: "Compete & be the best", icon: Trophy, action: onOpenLeaderboard },
           ].map((q) => {
             const Icon = q.icon;
             return (
@@ -1310,7 +2104,25 @@ function Home({
 }
 
 // ---------- Program page: choose Subject (or Year for MBBS) ----------
-function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
+// Shared header row: a "Back to X" link on the left, and a "Home" link on the
+// right whenever onHome is provided — so students are never more than one tap
+// away from Home, even deep inside Program → Subject → Topic navigation.
+function BackHomeBar({ onBack, backLabel = "Back", onHome }) {
+  return (
+    <div className="flex items-center justify-between mb-6">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+        <ArrowLeft size={16} /> {backLabel}
+      </button>
+      {onHome && (
+        <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+          <HomeIcon size={16} /> Home
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear, onHome }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
   const isMDCAT = TOPIC_PROGRAMS.includes(program);
@@ -1391,7 +2203,7 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear }) {
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, onBack, onOpenBlock }) {
+function YearPage({ program, year, bank, onBack, onOpenBlock, onHome }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
   const blocks = blockNames.map((name) => ({
@@ -1403,9 +2215,7 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to years
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to years" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year}
         </h1>
@@ -1450,7 +2260,7 @@ function YearPage({ program, year, bank, onBack, onOpenBlock }) {
 }
 
 // ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
-function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
+function BlockPage({ program, year, block, bank, onBack, onOpenSubject, onHome }) {
   const blockQuestions = bank.filter(
     (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
   );
@@ -1464,9 +2274,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to blocks
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to blocks" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year} · {block}
         </h1>
@@ -1514,7 +2322,7 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject }) {
 }
 
 // ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
-function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
+function TopicPage({ program, subject, bank, onBack, onOpenTopic, onHome }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
   const topicNames = MDCAT_TOPICS[subject] || [];
   const topics = topicNames.map((name) => ({
@@ -1526,9 +2334,7 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to subjects
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {subject}
         </h1>
@@ -1571,7 +2377,7 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic }) {
 }
 
 // ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart }) {
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -1597,9 +2403,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to subjects
-        </button>
+        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
           {program}
         </div>
@@ -1672,20 +2476,28 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 }
 
 // ---------- Quiz ----------
-function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onToggleBookmark }) {
+function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [answerTimes, setAnswerTimes] = useState({});
   const [showExplain, setShowExplain] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(timeLimit || 0);
+  const [questionStartedAt, setQuestionStartedAt] = useState(Date.now());
   const q = questions[idx];
   const letters = ["A", "B", "C", "D"];
   const revealed = answers[idx] !== undefined;
   const isCorrect = revealed && answers[idx] === q.correct;
   const isBookmarked = bookmarks && q ? bookmarks.includes(q.id) : false;
 
+  useEffect(() => {
+    setQuestionStartedAt(Date.now());
+  }, [idx]);
+
   const select = (i) => {
     if (revealed) return;
+    const elapsedSeconds = Math.round((Date.now() - questionStartedAt) / 1000);
     setAnswers((a) => ({ ...a, [idx]: i }));
+    setAnswerTimes((t) => ({ ...t, [idx]: elapsedSeconds }));
   };
 
   const toggleExplain = () => setShowExplain((s) => ({ ...s, [idx]: !s[idx] }));
@@ -1695,8 +2507,8 @@ function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onTo
     questions.forEach((qq, i) => {
       if (answers[i] === qq.correct) correct++;
     });
-    onFinish({ questions, answers, correct });
-  }, [questions, answers, onFinish]);
+    onFinish({ questions, answers, answerTimes, correct });
+  }, [questions, answers, answerTimes, onFinish]);
 
   useEffect(() => {
     if (!timeLimit) return;
@@ -1717,9 +2529,16 @@ function Quiz({ questions, subject, onFinish, onExit, timeLimit, bookmarks, onTo
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
-          <button onClick={onExit} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
-            <ArrowLeft size={16} /> Exit
-          </button>
+          <div className="flex items-center gap-4">
+            <button onClick={onExit} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+              <ArrowLeft size={16} /> Exit
+            </button>
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             {timeLimit ? (
               <div
@@ -1941,7 +2760,7 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
 
 // ---------- Student Auth (Sign up / Log in) ----------
 function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1952,12 +2771,30 @@ function AuthScreen({ onAuthed }) {
   const [busy, setBusy] = useState(false);
 
   const isLogin = mode === "login";
-  const accent = isLogin ? "#6FA3F5" : "#4CD9A0";
-  const btnBg = isLogin ? T.blue : T.emerald;
+  const isForgot = mode === "forgot";
+  const accent = isForgot ? "#F1C177" : isLogin ? "#6FA3F5" : "#4CD9A0";
+  const btnBg = isForgot ? T.amber : isLogin ? T.blue : T.emerald;
 
   const submit = async () => {
     setError("");
     setNotice("");
+
+    if (isForgot) {
+      if (!email.trim()) {
+        setError("Please enter your email.");
+        return;
+      }
+      setBusy(true);
+      const { error: err } = await sendPasswordReset(email.trim());
+      setBusy(false);
+      if (err) {
+        setError(err.message);
+        return;
+      }
+      setNotice("If an account exists for that email, a reset link has been sent. Check your inbox (and spam folder), then follow the link to set a new password.");
+      return;
+    }
+
     if (!email.trim() || !password.trim()) {
       setError("Please enter both email and password.");
       return;
@@ -2027,17 +2864,19 @@ function AuthScreen({ onAuthed }) {
           className="flex items-center justify-center mb-5"
           style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `1px solid rgba(255,255,255,0.2)` }}
         >
-          {isLogin ? <ShieldCheck size={24} color={accent} /> : <FlaskConical size={24} color={accent} />}
+          {isForgot ? <KeyRound size={24} color={accent} /> : isLogin ? <ShieldCheck size={24} color={accent} /> : <FlaskConical size={24} color={accent} />}
         </div>
 
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: accent }} className="text-3xl mb-1">
-          {isLogin ? "Log in" : "Create your account"}
+          {isForgot ? "Reset your password" : isLogin ? "Log in" : "Create your account"}
         </h1>
         <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
-          {isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
+          {isForgot
+            ? "Enter the email on your account and we'll send you a link to set a new password."
+            : isLogin ? "Log in to track your own MCQ scores." : "Sign up to save your practice scores."}
         </p>
 
-        {!isLogin && (
+        {!isLogin && !isForgot && (
           <div className="mb-3">
             <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
               Name
@@ -2072,6 +2911,7 @@ function AuthScreen({ onAuthed }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && isForgot && submit()}
               placeholder="you@example.com"
               className="w-full py-3 outline-none"
               style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
@@ -2079,28 +2919,41 @@ function AuthScreen({ onAuthed }) {
           </div>
         </div>
 
-        <div className="mb-2">
-          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
-            Password
-          </label>
-          <div
-            className="flex items-center gap-2 px-3"
-            style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
-          >
-            <Lock size={14} color={accent} />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="At least 6 characters"
-              className="w-full py-3 outline-none"
-              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
-            />
+        {!isForgot && (
+          <div className="mb-2">
+            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+              Password
+            </label>
+            <div
+              className="flex items-center gap-2 px-3"
+              style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+            >
+              <Lock size={14} color={accent} />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+                placeholder="At least 6 characters"
+                className="w-full py-3 outline-none"
+                style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {!isLogin && (
+        {isLogin && (
+          <button
+            type="button"
+            onClick={() => { setMode("forgot"); setError(""); setNotice(""); }}
+            className="text-xs mt-1 mb-1"
+            style={{ color: "#8FA0C4" }}
+          >
+            Forgot password?
+          </button>
+        )}
+
+        {!isLogin && !isForgot && (
           <div className="mb-2 relative">
             <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
               Course
@@ -2150,15 +3003,130 @@ function AuthScreen({ onAuthed }) {
           className="w-full py-3 text-sm mt-5 disabled:opacity-50 font-medium"
           style={{ background: btnBg, color: "#fff" }}
         >
-          {busy ? "Please wait…" : isLogin ? "Log in" : "Sign up"}
+          {busy ? "Please wait…" : isForgot ? "Send reset link" : isLogin ? "Log in" : "Sign up"}
+        </button>
+
+        {isForgot ? (
+          <button
+            onClick={() => { setMode("login"); setError(""); setNotice(""); }}
+            className="w-full text-sm mt-4"
+            style={{ color: accent }}
+          >
+            Back to log in
+          </button>
+        ) : (
+          <button
+            onClick={() => { setMode(isLogin ? "signup" : "login"); setError(""); setNotice(""); }}
+            className="w-full text-sm mt-4"
+            style={{ color: accent }}
+          >
+            {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Reset Password screen (shown after clicking the emailed reset link) ----------
+function ResetPasswordScreen({ onDone, onSignOutAndCancel }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    const { error: err } = await updatePassword(password);
+    setBusy(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    onDone();
+  };
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center relative overflow-hidden"
+      style={{ background: "linear-gradient(160deg, #0A1B3D, #123A6B 55%, #0A1B3D)", color: "#fff" }}
+    >
+      <FontLoader />
+      <div className="w-full max-w-sm px-6 relative z-10">
+        <div
+          className="flex items-center justify-center mb-5"
+          style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: `1px solid rgba(255,255,255,0.2)` }}
+        >
+          <KeyRound size={24} color="#F1C177" />
+        </div>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: "#F1C177" }} className="text-3xl mb-1">
+          Set a new password
+        </h1>
+        <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
+          You've followed a password reset link. Choose a new password below.
+        </p>
+
+        <div className="mb-3">
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            New password
+          </label>
+          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}>
+            <Lock size={14} color="#F1C177" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="At least 6 characters"
+              className="w-full py-3 outline-none"
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+            />
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+            Confirm new password
+          </label>
+          <div className="flex items-center gap-2 px-3" style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}>
+            <Lock size={14} color="#F1C177" />
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder="Re-enter new password"
+              className="w-full py-3 outline-none"
+              style={{ background: "transparent", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+            />
+          </div>
+        </div>
+
+        {error && <div className="text-sm mt-2" style={{ color: "#F5A3A3" }}>{error}</div>}
+
+        <button
+          onClick={submit}
+          disabled={busy}
+          className="w-full py-3 text-sm mt-5 disabled:opacity-50 font-medium"
+          style={{ background: T.amber, color: "#fff" }}
+        >
+          {busy ? "Please wait…" : "Update password"}
         </button>
 
         <button
-          onClick={() => { setMode(isLogin ? "signup" : "login"); setError(""); setNotice(""); }}
+          onClick={onSignOutAndCancel}
           className="w-full text-sm mt-4"
-          style={{ color: accent }}
+          style={{ color: "#8FA0C4" }}
         >
-          {isLogin ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+          Cancel and sign out
         </button>
       </div>
     </div>
@@ -2173,12 +3141,7 @@ function AdminGate({ onUnlock, onBack }) {
   const [error, setError] = useState("");
 
   const submit = async () => {
-    const { passcode, failed } = await loadPasscode();
-    if (failed) {
-      setError("Couldn't reach the server. Check your connection and try again.");
-      return;
-    }
-    let stored = passcode;
+    let stored = await loadPasscode();
     if (!stored) {
       stored = DEFAULT_PASSCODE;
       await savePasscode(stored);
@@ -2199,7 +3162,8 @@ function AdminGate({ onUnlock, onBack }) {
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin sign-in</h1>
         </div>
         <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-          Default passcode is <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{DEFAULT_PASSCODE}</code> — change it after signing in.
+          Enter the admin passcode. This screen is only a second check — you must
+          already be signed in with the designated admin account for changes to save.
         </p>
         <input
           type="password"
@@ -2246,27 +3210,16 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     } else {
       next = [...notesBank, { ...noteForm, id: uid() }];
     }
-    const prev = notesBank;
     setNotesBank(next);
-    const ok = await saveNotes(next);
-    if (!ok) {
-      setNotesBank(prev);
-      alert("Couldn't save this note to the server. Check your connection (and that the 'notes' column exists) and try again.");
-      return;
-    }
+    await saveNotes(next);
     setNoteForm(EMPTY_NOTE_FORM);
     setEditingNoteId(null);
   };
   const startEditNote = (n) => { setNoteForm({ ...n }); setEditingNoteId(n.id); };
   const removeNote = async (id) => {
-    const prev = notesBank;
     const next = notesBank.filter((n) => n.id !== id);
     setNotesBank(next);
-    const ok = await saveNotes(next);
-    if (!ok) {
-      setNotesBank(prev);
-      alert("Couldn't delete this note on the server. Check your connection and try again.");
-    }
+    await saveNotes(next);
   };
 
   const addNotification = async () => {
@@ -2274,26 +3227,15 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       alert("Please fill in a title and message.");
       return;
     }
-    const prev = notifications;
     const next = [...notifications, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
     setNotifications(next);
-    const ok = await saveNotifications(next);
-    if (!ok) {
-      setNotifications(prev);
-      alert("This notification wasn't saved to the server, so it will NOT show up for students. Check your connection (and that the 'notifications' column exists on app_data) and try again.");
-      return;
-    }
+    await saveNotifications(next);
     setNotifForm(EMPTY_NOTIF_FORM);
   };
   const removeNotification = async (id) => {
-    const prev = notifications;
     const next = notifications.filter((n) => n.id !== id);
     setNotifications(next);
-    const ok = await saveNotifications(next);
-    if (!ok) {
-      setNotifications(prev);
-      alert("Couldn't delete this notification on the server. Check your connection and try again.");
-    }
+    await saveNotifications(next);
   };
 
   const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
@@ -2417,15 +3359,9 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       setBulkError("No questions selected to add.");
       return;
     }
-    const prev = bank;
     const next = [...bank, ...toAdd];
     setBank(next);
-    const ok = await saveBank(next);
-    if (!ok) {
-      setBank(prev);
-      alert("Couldn't save these questions to the server. Check your connection and try again.");
-      return;
-    }
+    await saveBank(next);
     setBulkResults([]);
     setBulkSummary("");
     setBulkStatus("idle");
@@ -2444,14 +3380,9 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const startEdit = (q) => { setForm({ ...q, options: [...q.options] }); setEditingId(q.id); setTab("form"); };
 
   const remove = async (id) => {
-    const prev = bank;
     const next = bank.filter((q) => q.id !== id);
     setBank(next);
-    const ok = await saveBank(next);
-    if (!ok) {
-      setBank(prev);
-      alert("Couldn't delete this question on the server. Check your connection and try again — otherwise it may come back next time the app refreshes.");
-    }
+    await saveBank(next);
   };
 
   const submit = async () => {
@@ -2470,7 +3401,6 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         return;
       }
     }
-    const prev = bank;
     let next;
     if (editingId) {
       next = bank.map((q) => (q.id === editingId ? { ...form, id: editingId } : q));
@@ -2478,22 +3408,13 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       next = [...bank, { ...form, id: uid() }];
     }
     setBank(next);
-    const ok = await saveBank(next);
-    if (!ok) {
-      setBank(prev);
-      alert("Couldn't save this question to the server. Check your connection and try again.");
-      return;
-    }
+    await saveBank(next);
     setTab("list");
   };
 
   const changePass = async () => {
     if (!newPass.trim()) return;
-    const ok = await savePasscode(newPass.trim());
-    if (!ok) {
-      alert("Couldn't update the passcode on the server. Check your connection and try again.");
-      return;
-    }
+    await savePasscode(newPass.trim());
     setPassMsg("Passcode updated.");
     setNewPass("");
     setTimeout(() => setPassMsg(""), 2500);
@@ -3144,6 +4065,15 @@ export default function App() {
   const [bank, setBank] = useState([]);
   const [notesBank, setNotesBank] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [syllabusItems, setSyllabusItems] = useState([]);
+  const [guidelineItems, setGuidelineItems] = useState([]);
+  const [contactItems, setContactItems] = useState([]);
+  const [socialLinks, setSocialLinks] = useState({});
+  // True once the admin passcode has been entered successfully this session.
+  // Lets an admin see the "+ Add" controls on Syllabus/Guidelines/Contact/Notes
+  // even after exiting the full Admin Panel, without giving those controls to students.
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [stats, setStats] = useState(null);
   const [view, setView] = useState("home");
   const [program, setProgram] = useState(null);
@@ -3158,88 +4088,51 @@ export default function App() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     (async () => {
       const session = await getSession();
-      if (session) {
-        const installed = await hasInstallMarker();
-        if (!installed) {
-          // A session exists in storage, but our own "this device still has the app"
-          // marker is gone — most likely the app was uninstalled and reinstalled and
-          // an Android backup restored the old localStorage session. Treat it as stale.
-          await signOut();
-          await setInstallMarker();
-          setUser(null);
-          setAuthChecked(true);
-          return;
-        }
-      }
-      await setInstallMarker();
       setUser(session?.user || null);
       setAuthChecked(true);
     })();
-    const sub = onAuthChange((session) => {
+    const sub = onAuthChange((session, event) => {
       setUser(session?.user || null);
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
     });
     return () => sub?.unsubscribe && sub.unsubscribe();
   }, []);
 
-  // Pulls the latest bank / notes / notifications from Supabase. Used both for the
-  // initial load and for periodic background refreshes, so every student's app
-  // eventually reflects whatever the admin most recently saved (a deleted MCQ, a new
-  // notification, etc.) without needing to log out and back in.
-  const refreshSharedData = useCallback(async () => {
-    const { bank: b, failed } = await loadBank();
-    if (b) {
-      setBank(b);
-    } else if (!failed) {
-      // Genuinely no row / no bank yet (first run) — seed it once.
-      const seeded = SEED_MCQS;
-      setBank(seeded);
-      await saveBank(seeded);
-    }
-    // if failed, just keep whatever bank we already have in memory — never reseed on a
-    // read error, that's what was causing deleted questions to reappear for everyone.
-    const [n, notifs] = await Promise.all([loadNotes(), loadNotifications()]);
-    setNotesBank(n);
-    setNotifications(notifs);
-  }, []);
-
   useEffect(() => {
-    if (!isAdminURL && !user) return;
+    if (!user) return;
     (async () => {
-      await refreshSharedData();
-      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], streak: 0, lastChallengeDate: null };
+      let b = await loadBank();
+      if (!b) {
+        b = SEED_MCQS;
+        await saveBank(b);
+      }
+      setBank(b);
+      const [n, notifs, rv, syl, gui, con, sl] = await Promise.all([
+        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(),
+      ]);
+      setNotesBank(n);
+      setNotifications(notifs);
+      setReviews(rv);
+      setSyllabusItems(syl);
+      setGuidelineItems(gui);
+      setContactItems(con);
+      setSocialLinks(sl);
+      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "" };
       if (user) {
         const st = await loadUserStats(user.id);
-        setStats(st ? { ...emptyStats, ...st } : emptyStats);
+        const displayName = user?.user_metadata?.name || "";
+        setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
       } else {
         setStats(emptyStats);
       }
       setLoading(false);
     })();
-  }, [user, isAdminURL, refreshSharedData]);
-
-  // Background refresh: keeps notifications/notes/bank in sync for students who leave
-  // the app open, and catches up immediately when they return to the tab/app — this is
-  // what makes a notification the admin sends actually show up for everyone, not just
-  // the admin's own already-open session. Skipped while inside the Admin Panel so it
-  // doesn't clobber an in-progress edit.
-  useEffect(() => {
-    if (!isAdminURL && !user) return;
-    if (view === "admin" || view === "admin-gate") return;
-    const POLL_MS = 45000;
-    const interval = setInterval(() => { refreshSharedData(); }, POLL_MS);
-    const onVisible = () => { if (document.visibilityState === "visible") refreshSharedData(); };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-    };
-  }, [user, isAdminURL, view, refreshSharedData]);
+  }, [user]);
 
   // Each student only sees the course they picked at signup. Accounts created before
   // this feature (or the ?admin= entry point) have no course set, so they still see all programs.
@@ -3304,26 +4197,98 @@ export default function App() {
   };
 
   const openSaved = () => {
-    const ids = new Set(stats?.bookmarks || []);
+    // Saved = manually bookmarked + auto-saved (answered wrong, or took over 1 minute)
+    const ids = new Set([
+      ...(stats?.bookmarks || []),
+      ...(stats?.wrongIds || []),
+      ...(stats?.slowIds || []),
+    ]);
     const qs = bank.filter((q) => ids.has(q.id));
-    startSpecialQuiz(qs, "Saved Questions", "saved", "You haven't saved any questions yet. Tap the bookmark icon while practicing to save one.");
+    startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
   };
 
   const toggleBookmark = async (qid) => {
     const current = stats?.bookmarks || [];
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
-    const nextStats = { ...stats, bookmarks: next };
+    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "" };
     setStats(nextStats);
     if (user) await saveUserStats(user.id, nextStats);
+  };
+
+  // ---- Reviews: any signed-in student can add one; visible to everyone ----
+  const addReview = async (review) => {
+    const next = [...reviews, { ...review, id: uid(), createdAt: new Date().toISOString() }];
+    setReviews(next);
+    await saveReviews(next);
+  };
+
+  // ---- Syllabus items: admin-only add/remove ----
+  const addSyllabusItem = async (item) => {
+    const next = [...syllabusItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setSyllabusItems(next);
+    await saveSyllabusItems(next);
+  };
+  const removeSyllabusItem = async (id) => {
+    const next = syllabusItems.filter((i) => i.id !== id);
+    setSyllabusItems(next);
+    await saveSyllabusItems(next);
+  };
+
+  // ---- Guideline items: admin-only add/remove ----
+  const addGuidelineItem = async (item) => {
+    const next = [...guidelineItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setGuidelineItems(next);
+    await saveGuidelineItems(next);
+  };
+  const removeGuidelineItem = async (id) => {
+    const next = guidelineItems.filter((i) => i.id !== id);
+    setGuidelineItems(next);
+    await saveGuidelineItems(next);
+  };
+
+  // ---- Contact items (WhatsApp / links): admin-only add/remove ----
+  const addContactItem = async (item) => {
+    const next = [...contactItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    setContactItems(next);
+    await saveContactItems(next);
+  };
+  const removeContactItem = async (id) => {
+    const next = contactItems.filter((i) => i.id !== id);
+    setContactItems(next);
+    await saveContactItems(next);
+  };
+
+  // ---- Social link cards (WhatsApp Group / Instagram / Facebook / TikTok): admin-only update ----
+  const updateSocialLink = async (label, url) => {
+    const next = { ...socialLinks, [label]: url };
+    setSocialLinks(next);
+    await saveSocialLinksMap(next);
+  };
+
+  // ---- Quick "add note" from inside the Notes tab (admin only) ----
+  const quickAddNote = async (programKey, subjectName, title, content) => {
+    const next = [...notesBank, { id: uid(), program: programKey, subject: subjectName, title, content }];
+    setNotesBank(next);
+    await saveNotes(next);
   };
 
   const finishQuiz = async (res) => {
     setResult(res);
 
+    const SLOW_THRESHOLD_SECONDS = 60;
     const wrongSet = new Set(stats?.wrongIds || []);
+    const slowSet = new Set(stats?.slowIds || []);
     res.questions.forEach((qq, i) => {
       if (res.answers[i] === qq.correct) wrongSet.delete(qq.id);
       else wrongSet.add(qq.id);
+
+      const elapsed = res.answerTimes ? res.answerTimes[i] : null;
+      if (elapsed !== null && elapsed !== undefined && elapsed > SLOW_THRESHOLD_SECONDS) {
+        slowSet.add(qq.id);
+      } else if (elapsed !== null && elapsed !== undefined) {
+        // Answered quickly this time — no longer flag it as "slow"
+        slowSet.delete(qq.id);
+      }
     });
 
     let streak = stats?.streak || 0;
@@ -3343,8 +4308,10 @@ export default function App() {
       bySubject: { ...(stats?.bySubject || {}) },
       bookmarks: stats?.bookmarks || [],
       wrongIds: Array.from(wrongSet),
+      slowIds: Array.from(slowSet),
       streak,
       lastChallengeDate,
+      name: user?.user_metadata?.name || stats?.name || "",
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -3363,6 +4330,7 @@ export default function App() {
     await signOut();
     setUser(null);
     setStats(null);
+    setAdminUnlocked(false);
     setView("home");
   };
 
@@ -3375,7 +4343,20 @@ export default function App() {
     );
   }
 
-  if (!isAdminURL && !user) {
+  if (passwordRecovery && user) {
+    return (
+      <ResetPasswordScreen
+        onDone={() => setPasswordRecovery(false)}
+        onSignOutAndCancel={async () => {
+          await signOut();
+          setUser(null);
+          setPasswordRecovery(false);
+        }}
+      />
+    );
+  }
+
+  if (!user) {
     return <AuthScreen onAuthed={(session) => setUser(session.user)} />;
   }
 
@@ -3404,13 +4385,32 @@ export default function App() {
         onDailyChallenge={openDailyChallenge}
         onReviewMistakes={openReviewMistakes}
         onOpenSaved={openSaved}
+        onOpenLeaderboard={() => setView("leaderboard")}
         notesBank={notesBank}
         notifications={notifications}
+        isAdmin={adminUnlocked}
+        reviews={reviews}
+        onAddReview={addReview}
+        syllabusItems={syllabusItems}
+        onAddSyllabus={addSyllabusItem}
+        onRemoveSyllabus={removeSyllabusItem}
+        guidelineItems={guidelineItems}
+        onAddGuideline={addGuidelineItem}
+        onRemoveGuideline={removeGuidelineItem}
+        contactItems={contactItems}
+        onAddContact={addContactItem}
+        onRemoveContact={removeContactItem}
+        socialLinks={socialLinks}
+        onUpdateSocialLink={updateSocialLink}
+        onAddNote={quickAddNote}
       />
     );
   }
+  if (view === "leaderboard") {
+    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} />;
+  }
   if (view === "admin-gate") {
-    return <AdminGate onUnlock={() => setView("admin")} onBack={() => setView("home")} />;
+    return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={() => setView("home")} />;
   }
   if (view === "admin") {
     return (
@@ -3433,6 +4433,7 @@ export default function App() {
         onBack={() => setView("home")}
         onOpenSubject={openSubject}
         onOpenYear={openYear}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3444,6 +4445,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("program")}
         onOpenBlock={openBlock}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3456,6 +4458,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("year")}
         onOpenSubject={openSubject}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3467,6 +4470,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView("program")}
         onOpenTopic={openTopic}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3481,6 +4485,7 @@ export default function App() {
         bank={bank}
         onBack={() => setView(program === "MBBS" ? "block" : TOPIC_PROGRAMS.includes(program) ? "topic" : "program")}
         onStart={startQuiz}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -3494,6 +4499,7 @@ export default function App() {
         onToggleBookmark={toggleBookmark}
         onFinish={finishQuiz}
         onExit={() => setView(quizMeta.mode === "normal" ? "subject" : "home")}
+        onHome={() => setView("home")}
       />
     );
   }
