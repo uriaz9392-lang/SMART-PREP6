@@ -543,7 +543,7 @@ const MDCAT_TOPICS = {
   English: [
     "Sentence Structure/Types of Sentence", "Parts of Speech", "Nouns, Pronouns & Articles",
     "Subject-Verb Agreement", "Verb Forms", "Tenses", "Conditional Sentences",
-    "Active & Passive Voice", "Direct & Indirect Speech", "Conjunctions", "Phrases & Clauses",
+    "Active & Passive Voice", "Direct & Indirect Speech", "Conjunctions, Phrases & Clauses",
     "Prepositions", "Punctuation", "Error Detection", "Modifiers & Additional Grammar",
     "Figures of Speech", "Reading Comprehension", "Vocabulary",
   ],
