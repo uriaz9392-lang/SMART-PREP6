@@ -517,6 +517,35 @@ function colorForName(name = "") {
   return FOLDER_PALETTE[hash % FOLDER_PALETTE.length];
 }
 
+// Sums attempted/correct across every bySubject entry whose key matches `matcher`,
+// and returns the student's own accuracy % for that subject/topic/block/year — or
+// null if they haven't attempted anything there yet (so we can hide the badge).
+function accuracyFor(bySubject, matcher) {
+  let attempted = 0;
+  let correct = 0;
+  Object.entries(bySubject || {}).forEach(([key, val]) => {
+    if (matcher(key)) {
+      attempted += val?.attempted || 0;
+      correct += val?.correct || 0;
+    }
+  });
+  if (attempted === 0) return null;
+  return Math.round((correct / attempted) * 100);
+}
+
+function AccuracyBadge({ pct }) {
+  if (pct === null || pct === undefined) return null;
+  const color = pct >= 70 ? T.emerald : pct >= 40 ? T.amber : T.rose;
+  return (
+    <span
+      className="text-xs px-2 py-0.5 shrink-0"
+      style={{ fontFamily: "'IBM Plex Mono', monospace", color, background: `${color}22`, borderRadius: 4 }}
+    >
+      {pct}% accuracy
+    </span>
+  );
+}
+
 const DEFAULT_PASSCODE = "mdcat2026";
 
 // ---------- Fixed folder structures ----------
@@ -1935,6 +1964,17 @@ function Home({
   const attempted = stats?.totalAttempted || 0;
   const accuracy = attempted > 0 ? Math.round((stats.totalCorrect / attempted) * 100) : 0;
 
+  // Topper shown right on the Quick Access card, no need to open the leaderboard.
+  const [topLeader, setTopLeader] = useState(null);
+  useEffect(() => {
+    (async () => {
+      const data = await loadLeaderboard(1);
+      if (data && data[0]) setTopLeader(data[0]);
+    })();
+  }, []);
+  const topLeaderAccuracy =
+    topLeader && topLeader.total_attempted > 0 ? Math.round((topLeader.total_correct / topLeader.total_attempted) * 100) : 0;
+
   const greeting = useMemo(() => {
     const h = new Date().getHours();
     if (h < 5) return "Good Night";
@@ -2357,7 +2397,7 @@ function Home({
             { label: "Daily Challenge", sub: stats?.streak ? `🔥 ${stats.streak} day streak` : "Test your knowledge daily", icon: ClipboardCheck, action: onDailyChallenge },
             { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("progress") },
             { label: "Weak Topics", sub: `${stats?.wrongIds?.length || 0} to review`, icon: RotateCcw, action: onReviewMistakes },
-            { label: "Leaderboard", sub: "Compete & be the best", icon: Trophy, action: onOpenLeaderboard },
+            { label: "Leaderboard", sub: topLeader ? `🏆 ${topLeader.name} · ${topLeaderAccuracy}%` : "Compete & be the best", icon: Trophy, action: onOpenLeaderboard, highlight: !!topLeader },
           ].map((q) => {
             const Icon = q.icon;
             return (
@@ -2366,7 +2406,7 @@ function Home({
                   <Icon size={16} />
                 </div>
                 <div className="text-sm font-medium">{q.label}</div>
-                <div className="text-xs" style={{ color: T.inkSoft }}>{q.sub}</div>
+                <div className="text-xs truncate" style={{ color: q.highlight ? T.amber : T.inkSoft }}>{q.sub}</div>
               </button>
             );
           })}
@@ -2430,30 +2470,39 @@ function BackHomeBar({ onBack, backLabel = "Back", onHome }) {
   );
 }
 
-function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear, onHome }) {
+function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, onHome }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
   const isMDCAT = TOPIC_PROGRAMS.includes(program);
+  const bySubject = stats?.bySubject || {};
 
   const groups = useMemo(() => {
     if (isMBBS) {
       return Object.keys(MBBS_STRUCTURE).map((name) => ({
         name,
         count: progQuestions.filter((q) => (q.year || "") === name).length,
+        // MBBS stats keys look like "Year | Block | Subject" — match on the year prefix.
+        accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${name} | `)),
       }));
     }
     if (isMDCAT) {
       return Object.keys(MDCAT_TOPICS).map((name) => ({
         name,
         count: progQuestions.filter((q) => q.subject === name).length,
+        // Topic-program stats keys look like "Subject - Topic" — match on the subject prefix.
+        accuracy: accuracyFor(bySubject, (key) => key === name || key.startsWith(`${name} - `)),
       }));
     }
     const map = {};
     progQuestions.forEach((q) => {
       map[q.subject] = (map[q.subject] || 0) + 1;
     });
-    return Object.keys(map).sort().map((name) => ({ name, count: map[name] }));
-  }, [progQuestions, isMBBS, isMDCAT]);
+    return Object.keys(map).sort().map((name) => ({
+      name,
+      count: map[name],
+      accuracy: accuracyFor(bySubject, (key) => key === name),
+    }));
+  }, [progQuestions, isMBBS, isMDCAT, bySubject]);
 
   const progInfo = PROGRAMS.find((p) => p.key === program);
 
@@ -2496,8 +2545,9 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear, onHome 
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
                       {s.name}
                     </span>
-                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
-                      {s.count} question{s.count === 1 ? "" : "s"} available
+                    <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
+                      <span>{s.count} question{s.count === 1 ? "" : "s"} available</span>
+                      <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
                 </button>
@@ -2511,12 +2561,14 @@ function ProgramPage({ program, bank, onBack, onOpenSubject, onOpenYear, onHome 
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, onBack, onOpenBlock, onHome }) {
+function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
+  const bySubject = stats?.bySubject || {};
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
   const blocks = blockNames.map((name) => ({
     name,
     count: yearQuestions.filter((q) => (q.block || "") === name).length,
+    accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${year} | ${name} | `)),
   }));
 
   return (
@@ -2554,8 +2606,9 @@ function YearPage({ program, year, bank, onBack, onOpenBlock, onHome }) {
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
                     {b.name}
                   </span>
-                  <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
-                    {b.count} question{b.count === 1 ? "" : "s"} available
+                  <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
+                    <span>{b.count} question{b.count === 1 ? "" : "s"} available</span>
+                    <AccuracyBadge pct={b.accuracy} />
                   </div>
                 </div>
               </button>
@@ -2568,14 +2621,16 @@ function YearPage({ program, year, bank, onBack, onOpenBlock, onHome }) {
 }
 
 // ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
-function BlockPage({ program, year, block, bank, onBack, onOpenSubject, onHome }) {
+function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, onHome }) {
   const blockQuestions = bank.filter(
     (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
   );
+  const bySubject = stats?.bySubject || {};
   const subjectNames = (MBBS_STRUCTURE[year] && MBBS_STRUCTURE[year][block]) || [];
   const subjects = subjectNames.map((name) => ({
     name,
     count: blockQuestions.filter((q) => q.subject === name).length,
+    accuracy: accuracyFor(bySubject, (key) => key === `${year} | ${block} | ${name}`),
   }));
 
   return (
@@ -2615,8 +2670,9 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject, onHome }
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
                       {s.name}
                     </span>
-                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
-                      {s.count} question{s.count === 1 ? "" : "s"} available
+                    <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
+                      <span>{s.count} question{s.count === 1 ? "" : "s"} available</span>
+                      <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
                 </button>
@@ -2630,12 +2686,14 @@ function BlockPage({ program, year, block, bank, onBack, onOpenSubject, onHome }
 }
 
 // ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
-function TopicPage({ program, subject, bank, onBack, onOpenTopic, onHome }) {
+function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
+  const bySubject = stats?.bySubject || {};
   const topicNames = MDCAT_TOPICS[subject] || [];
   const topics = topicNames.map((name) => ({
     name,
     count: subjQuestions.filter((q) => q.topic === name).length,
+    accuracy: accuracyFor(bySubject, (key) => key === `${subject} - ${name}`),
   }));
 
   return (
@@ -2672,8 +2730,9 @@ function TopicPage({ program, subject, bank, onBack, onOpenTopic, onHome }) {
                   </div>
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
                 </div>
-                <span className="text-xs shrink-0" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                  {t.count} q
+                <span className="text-xs shrink-0 flex flex-col items-end gap-1" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                  <span>{t.count} q</span>
+                  <AccuracyBadge pct={t.accuracy} />
                 </span>
               </button>
             ))}
@@ -4940,6 +4999,7 @@ export default function App() {
       <ProgramPage
         program={program}
         bank={bank}
+        stats={stats}
         onBack={() => setView("home")}
         onOpenSubject={openSubject}
         onOpenYear={openYear}
@@ -4953,6 +5013,7 @@ export default function App() {
         program={program}
         year={year}
         bank={bank}
+        stats={stats}
         onBack={() => setView("program")}
         onOpenBlock={openBlock}
         onHome={() => setView("home")}
@@ -4966,6 +5027,7 @@ export default function App() {
         year={year}
         block={block}
         bank={bank}
+        stats={stats}
         onBack={() => setView("year")}
         onOpenSubject={openSubject}
         onHome={() => setView("home")}
@@ -4978,6 +5040,7 @@ export default function App() {
         program={program}
         subject={subject}
         bank={bank}
+        stats={stats}
         onBack={() => setView("program")}
         onOpenTopic={openTopic}
         onHome={() => setView("home")}
