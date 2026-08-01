@@ -7,7 +7,7 @@ import {
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
-  Instagram, Facebook, Music2,
+  Instagram, Facebook, Music2, Brain,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -490,6 +490,7 @@ const SUBJECT_ICONS = {
   Chemistry: FlaskConical,
   Physics: Atom,
   English: BookOpen,
+  "Logical Reasoning": Brain,
 };
 function subjectIcon(name) {
   return SUBJECT_ICONS[name] || ClipboardList;
@@ -501,6 +502,7 @@ const SUBJECT_COLORS = {
   Chemistry: "#7C5CD6",
   Physics: "#2E7FE0",
   English: "#E0812E",
+  "Logical Reasoning": "#D6455C",
 };
 const FOLDER_PALETTE = [
   "#1F9D6B", "#7C5CD6", "#2E7FE0", "#E0812E", "#D6455C",
@@ -543,6 +545,7 @@ const MDCAT_TOPICS = {
     "Prepositions", "Punctuation", "Error Detection", "Modifiers & Additional Grammar",
     "Figures of Speech", "Reading Comprehension", "Vocabulary",
   ],
+  "Logical Reasoning": [],
 };
 
 const MBBS_STRUCTURE = {
@@ -3502,7 +3505,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const bulkClassificationReady =
     bulkForm.program === "MBBS"
       ? !!(bulkForm.year && bulkForm.block && bulkForm.subject)
-      : !!(bulkForm.subject && (TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : true));
+      : !!(
+          bulkForm.subject &&
+          (TOPIC_PROGRAMS.includes(bulkForm.program) && (MDCAT_TOPICS[bulkForm.subject] || []).length > 0
+            ? bulkForm.topic
+            : true)
+        );
 
   const runBulkExtract = async () => {
     if (!bulkFile) {
@@ -3684,7 +3692,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         return;
       }
     } else {
-      if (!form.subject.trim() || !form.topic.trim()) {
+      const needsTopic = !(TOPIC_PROGRAMS.includes(form.program) && (MDCAT_TOPICS[form.subject] || []).length === 0);
+      if (!form.subject.trim() || (needsTopic && !form.topic.trim())) {
         alert("Please fill in the subject and topic.");
         return;
       }
@@ -3852,16 +3861,22 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  <select
-                    value={form.topic}
-                    onChange={(e) => setForm({ ...form, topic: e.target.value })}
-                    disabled={!form.subject}
-                    className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: T.card }}
-                  >
-                    <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
-                    {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
-                  </select>
+                  {(MDCAT_TOPICS[form.subject] || []).length > 0 ? (
+                    <select
+                      value={form.topic}
+                      onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                      disabled={!form.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    >
+                      <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
+                      {(MDCAT_TOPICS[form.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
+                      {form.subject ? "No sub-topics for this subject" : "Choose subject first"}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -4003,16 +4018,22 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  <select
-                    value={bulkForm.topic}
-                    onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
-                    disabled={!bulkForm.subject}
-                    className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: T.card }}
-                  >
-                    <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
-                    {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
-                  </select>
+                  {(MDCAT_TOPICS[bulkForm.subject] || []).length > 0 ? (
+                    <select
+                      value={bulkForm.topic}
+                      onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
+                      disabled={!bulkForm.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    >
+                      <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
+                      {(MDCAT_TOPICS[bulkForm.subject] || []).map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
+                      {bulkForm.subject ? "No sub-topics for this subject" : "Choose subject first"}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -4516,10 +4537,12 @@ export default function App() {
   const openBlock = (b) => { setBlock(b); setView("block"); };
   const openSubject = (s) => {
     setSubject(s);
-    if (TOPIC_PROGRAMS.includes(program)) {
+    const hasTopics = TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[s] || []).length > 0;
+    if (hasTopics) {
       setTopic(null);
       setView("topic");
     } else {
+      setTopic(null);
       setView("subject");
     }
   };
@@ -4850,15 +4873,16 @@ export default function App() {
     );
   }
   if (view === "subject") {
+    const subjectHasTopics = TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[subject] || []).length > 0;
     return (
       <SubjectSetup
         program={program}
         year={program === "MBBS" ? year : null}
         block={program === "MBBS" ? block : null}
-        topic={TOPIC_PROGRAMS.includes(program) ? topic : null}
+        topic={subjectHasTopics ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView(program === "MBBS" ? "block" : TOPIC_PROGRAMS.includes(program) ? "topic" : "program")}
+        onBack={() => setView(program === "MBBS" ? "block" : subjectHasTopics ? "topic" : "program")}
         onStart={startQuiz}
         onHome={() => setView("home")}
       />
