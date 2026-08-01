@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Dna, FlaskConical, Atom, BookOpen, Lock, Unlock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, Check, X, RotateCcw, Search, Settings,
@@ -7,8 +7,7 @@ import {
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
-  Instagram, Facebook, Music2, Brain, FileCheck2, Clock, Smartphone,
-  Timer, Activity, Shuffle,
+  Instagram, Facebook, Music2, Brain, FileCheck2,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -349,7 +348,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -365,7 +364,6 @@ export async function loadUserStats(userId) {
       lastChallengeDate: data.last_challenge_date || null,
       name: data.name || "",
       flpUsed: data.flp_used || {},
-      history: data.history || [],
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -387,7 +385,6 @@ export async function saveUserStats(userId, stats) {
       last_challenge_date: stats.lastChallengeDate || null,
       name: stats.name || "",
       flp_used: stats.flpUsed || {},
-      history: stats.history || [],
     });
     if (error) throw error;
   } catch (e) {
@@ -411,100 +408,6 @@ export async function loadLeaderboard(limit = 50) {
   } catch (e) {
     console.error("Load leaderboard failed (check RLS policy + columns on user_stats):", e);
     return [];
-  }
-}
-
-// ---- Exam countdown dates (admin-set, one date per program) ----
-// Requires an `exam_dates` jsonb column on the `app_data` table (default value {}).
-export async function loadExamDates() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("exam_dates").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.exam_dates) || {};
-  } catch (e) {
-    console.error("Load exam dates failed (add an 'exam_dates' jsonb column to app_data):", e);
-    return {};
-  }
-}
-export async function saveExamDates(examDates) {
-  try {
-    const { data, error } = await supabase.from("app_data").update({ exam_dates: examDates }).eq("id", 1).select("id");
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, exam_dates: examDates });
-      if (insertError) throw insertError;
-    }
-    return true;
-  } catch (e) {
-    console.error("Save exam dates failed (add an 'exam_dates' jsonb column to app_data):", e);
-    return false;
-  }
-}
-
-// ---- Usage analytics: installs + daily minutes used (for the Admin Dashboard) ----
-// Requires two new tables in Supabase (RLS open the same way `app_data` already is,
-// since both are written directly from the client with the anon key):
-//
-//   create table app_installs (
-//     id bigint generated always as identity primary key,
-//     user_id uuid,
-//     name text,
-//     installed_at timestamptz default now()
-//   );
-//
-//   create table usage_daily (
-//     user_id uuid not null,
-//     date date not null,
-//     name text,
-//     minutes int default 0,
-//     primary key (user_id, date)
-//   );
-//
-// Then in each table's RLS settings, either disable RLS or add policies allowing
-// anon INSERT/UPDATE/SELECT — the same permissive setup `app_data` already uses.
-export async function logAppInstall(userId, name) {
-  try {
-    const { error } = await supabase.from("app_installs").insert({ user_id: userId, name: name || "" });
-    if (error) throw error;
-  } catch (e) {
-    console.error("Log app install failed (create the 'app_installs' table — see comment above):", e);
-  }
-}
-
-// Adds `minutes` to today's usage row for this user (creates the row if it doesn't exist yet).
-export async function pingUsage(userId, name, minutes = 1) {
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const { data, error } = await supabase
-      .from("usage_daily")
-      .select("minutes")
-      .eq("user_id", userId)
-      .eq("date", today)
-      .maybeSingle();
-    if (error) throw error;
-    const nextMinutes = (data?.minutes || 0) + minutes;
-    const { error: upsertError } = await supabase
-      .from("usage_daily")
-      .upsert({ user_id: userId, date: today, name: name || "", minutes: nextMinutes });
-    if (upsertError) throw upsertError;
-  } catch (e) {
-    console.error("Ping usage failed (create the 'usage_daily' table — see comment above):", e);
-  }
-}
-
-// Pulls everything needed for the Admin Dashboard in one go.
-export async function loadUsageDashboard() {
-  try {
-    const [installsRes, usageRes] = await Promise.all([
-      supabase.from("app_installs").select("user_id, name, installed_at"),
-      supabase.from("usage_daily").select("user_id, date, name, minutes"),
-    ]);
-    if (installsRes.error) throw installsRes.error;
-    if (usageRes.error) throw usageRes.error;
-    return { installs: installsRes.data || [], usage: usageRes.data || [] };
-  } catch (e) {
-    console.error("Load usage dashboard failed (create 'app_installs' + 'usage_daily' tables — see comments above):", e);
-    return { installs: [], usage: [] };
   }
 }
 // ============================================================================
@@ -640,52 +543,6 @@ function AccuracyBadge({ pct }) {
     >
       {pct}% accuracy
     </span>
-  );
-}
-
-// Minimal dependency-free line chart (plain SVG) — used for the accuracy trend on
-// the Progress page and the usage trend on the Admin Dashboard.
-function TrendChart({ points, height = 140, color = T.blue, unit = "" }) {
-  const w = 320;
-  const h = height;
-  const pad = 24;
-  if (!points || points.length === 0) {
-    return (
-      <div className="flex items-center justify-center text-xs" style={{ height: h, color: T.inkSoft }}>
-        Not enough data yet.
-      </div>
-    );
-  }
-  const maxY = Math.max(100, ...points.map((p) => p.y));
-  const minY = 0;
-  const stepX = points.length > 1 ? (w - pad * 2) / (points.length - 1) : 0;
-  const coords = points.map((p, i) => {
-    const x = pad + i * stepX;
-    const y = h - pad - ((p.y - minY) / (maxY - minY || 1)) * (h - pad * 2);
-    return { x, y, ...p };
-  });
-  const path = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(" ");
-  const areaPath = `${path} L ${coords[coords.length - 1].x.toFixed(1)} ${h - pad} L ${coords[0].x.toFixed(1)} ${h - pad} Z`;
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
-      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke={T.line} strokeWidth="1" />
-      <path d={areaPath} fill={color} opacity="0.12" />
-      <path d={path} fill="none" stroke={color} strokeWidth="2" />
-      {coords.map((c, i) => (
-        <circle key={i} cx={c.x} cy={c.y} r="3" fill={color} />
-      ))}
-      {coords.map((c, i) => (
-        <text key={`label-${i}`} x={c.x} y={h - 6} fontSize="8" fill={T.inkSoft} textAnchor="middle" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
-          {c.label}
-        </text>
-      ))}
-      {coords.map((c, i) => (
-        <text key={`val-${i}`} x={c.x} y={c.y - 8} fontSize="8" fill={color} textAnchor="middle" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
-          {c.y}{unit}
-        </text>
-      ))}
-    </svg>
   );
 }
 
@@ -944,13 +801,6 @@ function shuffleArray(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
-}
-
-// Shuffles a question's option order (A/B/C/D) so the correct answer isn't always
-// in the same position on repeat attempts — remaps `correct` to match the new order.
-function shuffleQuestionOptions(q) {
-  const order = shuffleArray(q.options.map((_, i) => i));
-  return { ...q, options: order.map((i) => q.options[i]), correct: order.indexOf(q.correct) };
 }
 
 // ---------- FLP (Full Length Paper) auto-generator ----------
@@ -2081,7 +1931,6 @@ function Home({
   contactItems, onAddContact, onRemoveContact,
   socialLinks, onUpdateSocialLink,
   onAddNote,
-  examDates,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -2092,17 +1941,6 @@ function Home({
     programs.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key).length));
     return c;
   }, [bank, programs]);
-
-  // Exam countdown for the student's own course (admin sets the date; hidden once it's passed).
-  const daysToExam = useMemo(() => {
-    const dateStr = userCourse ? examDates?.[userCourse] : null;
-    if (!dateStr) return null;
-    const examDay = new Date(dateStr + "T00:00:00");
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const diff = Math.ceil((examDay - today) / 86400000);
-    return diff >= 0 ? diff : null;
-  }, [examDates, userCourse]);
 
   const [seenNotifCount, setSeenNotifCount] = useState(() => {
     try { return Number(localStorage.getItem("mdcat-notif-seen") || 0); } catch { return 0; }
@@ -2261,20 +2099,6 @@ function Home({
           <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
             <div className="text-sm" style={{ color: T.inkSoft }}>Overall accuracy</div>
             <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{accuracy}%</div>
-          </div>
-
-          <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-            <div className="text-sm mb-3 flex items-center gap-2" style={{ color: T.inkSoft }}>
-              <Activity size={14} /> Accuracy trend (last {Math.min(14, stats?.history?.length || 0)} days)
-            </div>
-            <TrendChart
-              points={(stats?.history || []).slice(-14).map((h) => ({
-                label: h.date.slice(5).replace("-", "/"),
-                y: h.attempted > 0 ? Math.round((h.correct / h.attempted) * 100) : 0,
-              }))}
-              color={T.blue}
-              unit="%"
-            />
           </div>
         </div>
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
@@ -2507,22 +2331,6 @@ function Home({
       )}
 
       <main className="max-w-5xl mx-auto px-6 -mt-4">
-        {daysToExam !== null && (
-          <div
-            className="flex items-center gap-3 mb-4 px-4 py-3 relative z-10"
-            style={{ background: "linear-gradient(135deg, #123A6B, #0F2A5C)", border: `1px solid ${T.line}`, borderRadius: 10, color: "#fff" }}
-          >
-            <div className="flex items-center justify-center shrink-0" style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(255,255,255,0.12)" }}>
-              <Clock size={18} />
-            </div>
-            <div>
-              <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg">
-                {daysToExam === 0 ? "Your exam is today!" : `${daysToExam} day${daysToExam === 1 ? "" : "s"} left`}
-              </div>
-              <div className="text-xs" style={{ color: "#B9C4DE" }}>until your {userCourse} exam — keep practicing!</div>
-            </div>
-          </div>
-        )}
         {/* Choose Your Program */}
         <div
           className="flex items-center justify-between mb-4 px-4 py-3 relative z-10"
@@ -3042,10 +2850,7 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   const [showExplain, setShowExplain] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(timeLimit || 0);
   const [questionStartedAt, setQuestionStartedAt] = useState(Date.now());
-  // Options are re-shuffled once whenever a fresh `questions` array arrives (i.e. once
-  // per quiz), so the correct answer isn't always in the same A/B/C/D slot on repeats.
-  const shuffledQuestions = useMemo(() => questions.map(shuffleQuestionOptions), [questions]);
-  const q = shuffledQuestions[idx];
+  const q = questions[idx];
   const letters = ["A", "B", "C", "D"];
   const revealed = answers[idx] !== undefined;
   const isCorrect = revealed && answers[idx] === q.correct;
@@ -3066,11 +2871,11 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
 
   const finish = useCallback(() => {
     let correct = 0;
-    shuffledQuestions.forEach((qq, i) => {
+    questions.forEach((qq, i) => {
       if (answers[i] === qq.correct) correct++;
     });
-    onFinish({ questions: shuffledQuestions, answers, answerTimes, correct });
-  }, [shuffledQuestions, answers, answerTimes, onFinish]);
+    onFinish({ questions, answers, answerTimes, correct });
+  }, [questions, answers, answerTimes, onFinish]);
 
   useEffect(() => {
     if (!timeLimit) return;
@@ -3827,64 +3632,6 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     }
   };
 
-  // ---- Exam countdown dates ----
-  const [examDates, setExamDates] = useState({});
-  const [examDatesLoading, setExamDatesLoading] = useState(true);
-  const [examDatesMsg, setExamDatesMsg] = useState("");
-  useEffect(() => {
-    (async () => {
-      setExamDates(await loadExamDates());
-      setExamDatesLoading(false);
-    })();
-  }, []);
-  const saveExamDate = async (programKey, dateStr) => {
-    const next = { ...examDates, [programKey]: dateStr || undefined };
-    if (!dateStr) delete next[programKey];
-    setExamDates(next);
-    const ok = await saveExamDates(next);
-    setExamDatesMsg(ok ? "Saved." : "Could not save — check your internet connection.");
-    setTimeout(() => setExamDatesMsg(""), 2000);
-  };
-
-  // ---- Admin Dashboard: installs + daily usage ----
-  const [dashLoading, setDashLoading] = useState(true);
-  const [dashData, setDashData] = useState({ installs: [], usage: [] });
-  const loadDashboard = async () => {
-    setDashLoading(true);
-    setDashData(await loadUsageDashboard());
-    setDashLoading(false);
-  };
-  useEffect(() => { loadDashboard(); }, []);
-
-  const dashStats = useMemo(() => {
-    const { installs, usage } = dashData;
-    const installedUsers = new Set(installs.map((r) => r.user_id)).size;
-    const today = new Date().toISOString().slice(0, 10);
-    const todayRows = usage.filter((r) => r.date === today);
-    const activeToday = todayRows.length;
-    const minutesToday = todayRows.reduce((sum, r) => sum + (r.minutes || 0), 0);
-    const hoursToday = (minutesToday / 60).toFixed(1);
-
-    // Last 7 days total usage, for the trend chart.
-    const byDate = {};
-    usage.forEach((r) => { byDate[r.date] = (byDate[r.date] || 0) + (r.minutes || 0); });
-    const last7 = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-      last7.push({ label: d.slice(5).replace("-", "/"), y: Math.round(((byDate[d] || 0) / 60) * 10) / 10 });
-    }
-
-    // Total minutes per user, for a simple "most active students" list.
-    const perUser = {};
-    usage.forEach((r) => {
-      if (!perUser[r.user_id]) perUser[r.user_id] = { name: r.name || "Student", minutes: 0 };
-      perUser[r.user_id].minutes += r.minutes || 0;
-    });
-    const topUsers = Object.values(perUser).sort((a, b) => b.minutes - a.minutes).slice(0, 10);
-
-    return { installedUsers, activeToday, hoursToday, last7, topUsers };
-  }, [dashData]);
-
   const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
   const [bulkFile, setBulkFile] = useState(null);
   const [bulkStatus, setBulkStatus] = useState("idle");
@@ -4135,8 +3882,6 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             { k: "bulk", label: "Bulk Upload (PDF)" },
             { k: "notes", label: "Notes" },
             { k: "notifications", label: "Notifications" },
-            { k: "examdates", label: "Exam Dates" },
-            { k: "dashboard", label: "Dashboard" },
             { k: "settings", label: "Settings" },
           ].map((t) => (
             <button
@@ -4800,109 +4545,6 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           </div>
         )}
 
-        {tab === "examdates" && (
-          <div className="max-w-lg">
-            <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-2 flex items-center gap-2">
-              <Clock size={18} /> Exam Countdown Dates
-            </h2>
-            <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
-              Set the exam date for each program. Students only see a countdown for their
-              own course — clear the date to hide the countdown again.
-            </p>
-            {examDatesLoading ? (
-              <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>
-            ) : (
-              <div className="space-y-3">
-                {PROGRAMS.map((p) => (
-                  <div key={p.key} className="p-4 flex items-center justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
-                    <input
-                      type="date"
-                      value={examDates[p.key] || ""}
-                      onChange={(e) => saveExamDate(p.key, e.target.value)}
-                      className="px-3 py-2 text-sm"
-                      style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink, fontFamily: "'IBM Plex Mono', monospace" }}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            {examDatesMsg && <div className="text-sm mt-3" style={{ color: T.emerald }}>{examDatesMsg}</div>}
-          </div>
-        )}
-
-        {tab === "dashboard" && (
-          <div className="max-w-3xl">
-            <div className="flex items-center justify-between mb-2">
-              <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl flex items-center gap-2">
-                <Activity size={18} /> Usage Dashboard
-              </h2>
-              <button onClick={loadDashboard} className="flex items-center gap-1 text-xs px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
-                <RotateCcw size={12} /> Refresh
-              </button>
-            </div>
-            {dashLoading ? (
-              <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>
-            ) : (
-              <>
-                <div className="grid grid-cols-3 gap-3 mb-6">
-                  <div className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                    <div className="flex items-center gap-2 text-xs mb-1" style={{ color: T.inkSoft }}>
-                      <Smartphone size={13} /> App installed by
-                    </div>
-                    <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{dashStats.installedUsers}</div>
-                  </div>
-                  <div className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                    <div className="flex items-center gap-2 text-xs mb-1" style={{ color: T.inkSoft }}>
-                      <Users size={13} /> Active today
-                    </div>
-                    <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{dashStats.activeToday}</div>
-                  </div>
-                  <div className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                    <div className="flex items-center gap-2 text-xs mb-1" style={{ color: T.inkSoft }}>
-                      <Timer size={13} /> Hours used today
-                    </div>
-                    <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{dashStats.hoursToday}</div>
-                  </div>
-                </div>
-
-                <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                  <div className="text-sm mb-3" style={{ color: T.inkSoft }}>Total usage hours — last 7 days</div>
-                  <TrendChart points={dashStats.last7} color={T.emerald} unit="h" />
-                </div>
-
-                <div className="text-sm mb-3" style={{ color: T.inkSoft }}>Most active students (all-time minutes)</div>
-                {dashStats.topUsers.length === 0 ? (
-                  <div className="p-6 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
-                    No usage data yet.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {dashStats.topUsers.map((u, i) => (
-                      <div key={i} className="flex items-center justify-between p-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{i + 1}</span>
-                          <span>{u.name}</span>
-                        </div>
-                        <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                          {Math.round((u.minutes / 60) * 10) / 10}h
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <p className="text-xs mt-4" style={{ color: T.inkSoft }}>
-                  "Active today" and usage hours only count time the app was open and in the
-                  foreground. "App installed by" counts students whose browser fired a real PWA
-                  install event — this only works in browsers that support installable PWAs
-                  (e.g. Chrome/Edge on Android); iOS Safari's "Add to Home Screen" can't be
-                  detected this way.
-                </p>
-              </>
-            )}
-          </div>
-        )}
-
         {tab === "settings" && (
           <div className="max-w-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -4937,7 +4579,6 @@ export default function App() {
   const [guidelineItems, setGuidelineItems] = useState([]);
   const [contactItems, setContactItems] = useState([]);
   const [socialLinks, setSocialLinks] = useState({});
-  const [examDates, setExamDates] = useState({});
   // True once the admin passcode has been entered successfully this session.
   // Lets an admin see the "+ Add" controls on Syllabus/Guidelines/Contact/Notes
   // even after exiting the full Admin Panel, without giving those controls to students.
@@ -4980,8 +4621,8 @@ export default function App() {
         await saveBank(b);
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con, sl, ed] = await Promise.all([
-        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(), loadExamDates(),
+      const [n, notifs, rv, syl, gui, con, sl] = await Promise.all([
+        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(),
       ]);
       setNotesBank(n);
       setNotifications(notifs);
@@ -4990,8 +4631,7 @@ export default function App() {
       setGuidelineItems(gui);
       setContactItems(con);
       setSocialLinks(sl);
-      setExamDates(ed);
-      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
+      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {} };
       if (user) {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
@@ -5013,29 +4653,6 @@ export default function App() {
     setNotifications(notifs);
     return notifs;
   }, []);
-
-  // Usage analytics for the Admin Dashboard: log a row once when the PWA gets
-  // installed, and add a minute to today's usage total every 60s the app is
-  // actually in the foreground (so a phone left open in the background doesn't
-  // inflate the numbers).
-  useEffect(() => {
-    const onInstalled = () => {
-      if (user) logAppInstall(user.id, user.user_metadata?.name || user.email || "");
-    };
-    window.addEventListener("appinstalled", onInstalled);
-    return () => window.removeEventListener("appinstalled", onInstalled);
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    const tick = () => {
-      if (document.visibilityState === "visible") {
-        pingUsage(user.id, user.user_metadata?.name || user.email || "", 1);
-      }
-    };
-    const interval = setInterval(tick, 60000);
-    return () => clearInterval(interval);
-  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -5251,21 +4868,6 @@ export default function App() {
       flpUsed = { ...flpUsed, [quizMeta.flpProgram]: Array.from(priorUsed) };
     }
 
-    // Progress trend: merge today's totals into a rolling daily history (kept to 30 days).
-    const today = todayStr();
-    const history = [...(stats?.history || [])];
-    const todayIdx = history.findIndex((h) => h.date === today);
-    if (todayIdx >= 0) {
-      history[todayIdx] = {
-        date: today,
-        attempted: history[todayIdx].attempted + res.questions.length,
-        correct: history[todayIdx].correct + res.correct,
-      };
-    } else {
-      history.push({ date: today, attempted: res.questions.length, correct: res.correct });
-    }
-    const trimmedHistory = history.slice(-30);
-
     const next = {
       totalAttempted: (stats?.totalAttempted || 0) + res.questions.length,
       totalCorrect: (stats?.totalCorrect || 0) + res.correct,
@@ -5277,7 +4879,6 @@ export default function App() {
       lastChallengeDate,
       name: user?.user_metadata?.name || stats?.name || "",
       flpUsed,
-      history: trimmedHistory,
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -5371,7 +4972,6 @@ export default function App() {
         socialLinks={socialLinks}
         onUpdateSocialLink={updateSocialLink}
         onAddNote={quickAddNote}
-        examDates={examDates}
       />
     );
   }
