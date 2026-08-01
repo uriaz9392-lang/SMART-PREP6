@@ -3401,11 +3401,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     const prevNotes = notesBank;
+    const fresh = (await loadNotes()) || notesBank;
     let next;
     if (editingNoteId) {
-      next = notesBank.map((n) => (n.id === editingNoteId ? { ...noteForm, id: editingNoteId } : n));
+      next = fresh.map((n) => (n.id === editingNoteId ? { ...noteForm, id: editingNoteId } : n));
     } else {
-      next = [...notesBank, { ...noteForm, id: uid() }];
+      next = [...fresh, { ...noteForm, id: uid() }];
     }
     setNotesBank(next);
     const ok = await saveNotes(next);
@@ -3420,7 +3421,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const startEditNote = (n) => { setNoteForm({ type: "text", ...n }); setEditingNoteId(n.id); };
   const removeNote = async (id) => {
     const prev = notesBank;
-    const next = notesBank.filter((n) => n.id !== id);
+    const fresh = (await loadNotes()) || notesBank;
+    const next = fresh.filter((n) => n.id !== id);
     setNotesBank(next);
     const ok = await saveNotes(next);
     if (!ok) {
@@ -3435,7 +3437,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     const prev = notifications;
-    const next = [...notifications, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
+    const fresh = (await loadNotifications()) || notifications;
+    const next = [...fresh, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
     setNotifications(next);
     const ok = await saveNotifications(next);
     if (!ok) {
@@ -3447,7 +3450,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   };
   const removeNotification = async (id) => {
     const prev = notifications;
-    const next = notifications.filter((n) => n.id !== id);
+    const fresh = (await loadNotifications()) || notifications;
+    const next = fresh.filter((n) => n.id !== id);
     setNotifications(next);
     const ok = await saveNotifications(next);
     if (!ok) {
@@ -3578,7 +3582,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     const prevBank = bank;
-    const next = [...bank, ...toAdd];
+    const fresh = (await loadBank()) || bank;
+    const next = [...fresh, ...toAdd];
     setBank(next);
     const ok = await saveBank(next);
     if (!ok) {
@@ -3605,7 +3610,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
 
   const remove = async (id) => {
     const prev = bank;
-    const next = bank.filter((q) => q.id !== id);
+    const fresh = (await loadBank()) || bank;
+    const next = fresh.filter((q) => q.id !== id);
     setBank(next);
     const ok = await saveBank(next);
     if (!ok) {
@@ -3630,13 +3636,14 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         return;
       }
     }
+    const prevBank = bank;
+    const fresh = (await loadBank()) || bank;
     let next;
     if (editingId) {
-      next = bank.map((q) => (q.id === editingId ? { ...form, id: editingId } : q));
+      next = fresh.map((q) => (q.id === editingId ? { ...form, id: editingId } : q));
     } else {
-      next = [...bank, { ...form, id: uid() }];
+      next = [...fresh, { ...form, id: uid() }];
     }
-    const prevBank = bank;
     setBank(next);
     const ok = await saveBank(next);
     if (!ok) {
