@@ -20,7 +20,19 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://ehkrddewmmilogbojvkh.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Use sessionStorage (instead of the default localStorage) to keep the login
+// session. This ties "being logged in" to the current browser/app session:
+// - Normal use (reopening the app, refreshing the page) keeps working fine.
+// - When the app is fully closed & its data cleared, or uninstalled and then
+//   reinstalled, sessionStorage is gone — so the student will be asked to log
+//   in again instead of the app silently staying logged in forever.
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    storage: typeof window !== "undefined" ? window.sessionStorage : undefined,
+    persistSession: true,
+    autoRefreshToken: true,
+  },
+});
 
 // ---- Shared data (question bank + admin passcode) stored in one row ----
 export async function loadSharedData() {
@@ -1804,7 +1816,7 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard,
-  notesBank, notifications, isAdmin,
+  notesBank, notifications, onRefreshNotifications, isAdmin,
   reviews, onAddReview,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
   guidelineItems, onAddGuideline, onRemoveGuideline,
@@ -1826,10 +1838,18 @@ function Home({
     try { return Number(localStorage.getItem("mdcat-notif-seen") || 0); } catch { return 0; }
   });
   const unseenNotifs = Math.max(0, (notifications?.length || 0) - seenNotifCount);
-  const openNotifPanel = () => {
+  const openNotifPanel = async () => {
+    // Pull the freshest notifications from the server first — a student who was
+    // already logged in when the admin sent a new one otherwise wouldn't see it
+    // until they logged out and back in.
+    let list = notifications;
+    if (onRefreshNotifications) {
+      const fresh = await onRefreshNotifications();
+      if (fresh) list = fresh;
+    }
     setNotifOpen(true);
-    setSeenNotifCount(notifications?.length || 0);
-    try { localStorage.setItem("mdcat-notif-seen", String(notifications?.length || 0)); } catch {}
+    setSeenNotifCount(list?.length || 0);
+    try { localStorage.setItem("mdcat-notif-seen", String(list?.length || 0)); } catch {}
   };
 
   const topicsCompleted = stats ? Object.keys(stats.bySubject || {}).length : 0;
@@ -4422,6 +4442,25 @@ export default function App() {
     })();
   }, [user]);
 
+  // Keep notifications in sync for students who are ALREADY logged in when the
+  // admin sends a new one. Without this, a student's "notifications" list was
+  // only ever fetched once (at login), so new notifications sent afterwards
+  // looked like they "only showed up for admin" — really they just hadn't
+  // been re-fetched yet for anyone already using the app.
+  const refreshNotifications = useCallback(async () => {
+    const notifs = await loadNotifications();
+    setNotifications(notifs);
+    return notifs;
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(() => {
+      refreshNotifications();
+    }, 20000); // poll every 20 seconds so new notifications show up for everyone
+    return () => clearInterval(interval);
+  }, [user, refreshNotifications]);
+
   // Each student only sees the course they picked at signup. Accounts created before
   // this feature (or the ?admin= entry point) have no course set, so they still see all programs.
   const userCourse = !isAdminURL ? user?.user_metadata?.course || null : null;
@@ -4681,6 +4720,7 @@ export default function App() {
         onOpenLeaderboard={() => setView("leaderboard")}
         notesBank={notesBank}
         notifications={notifications}
+        onRefreshNotifications={refreshNotifications}
         isAdmin={adminUnlocked}
         reviews={reviews}
         onAddReview={addReview}
