@@ -174,6 +174,28 @@ export async function saveNotifications(notifications) {
   }
 }
 
+// ---- Note PDF uploads (whole PDF file, no text extraction) ----
+// Requires a PUBLIC Storage bucket named exactly "notes-pdfs" in your Supabase project:
+// Supabase dashboard → Storage → New bucket → name "notes-pdfs" → toggle "Public bucket" ON.
+// Uploads the raw file as-is and returns a public URL that students can open/download.
+export async function uploadNotePdf(file) {
+  try {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `${Date.now()}_${safeName}`;
+    const { error } = await supabase.storage.from("notes-pdfs").upload(path, file, {
+      cacheControl: "3600",
+      upsert: false,
+      contentType: "application/pdf",
+    });
+    if (error) throw error;
+    const { data } = supabase.storage.from("notes-pdfs").getPublicUrl(path);
+    return { url: data?.publicUrl || null, error: null };
+  } catch (e) {
+    console.error("PDF upload failed (create a PUBLIC 'notes-pdfs' Storage bucket in Supabase):", e);
+    return { url: null, error: e };
+  }
+}
+
 // ---- Reviews (public — any signed-in student can add one, everyone can read) ----
 // Requires a `reviews` jsonb column on the `app_data` table (default value []).
 export async function loadReviews() {
@@ -1054,7 +1076,8 @@ function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
   const [subject, setSubject] = useState(null);
   const [noteId, setNoteId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newNote, setNewNote] = useState({ title: "", content: "" });
+  const [newNote, setNewNote] = useState({ title: "", type: "text", content: "" });
+  const [pdfUploading, setPdfUploading] = useState(false);
 
   const notesForProg = (notesBank || []).filter((n) => n.program === prog);
   const subjects = useMemo(() => {
@@ -1109,9 +1132,21 @@ function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
             {note.program} · {note.subject}
           </div>
           <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">{note.title}</h1>
-          <div className="text-sm whitespace-pre-wrap leading-relaxed" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
-            {note.content}
-          </div>
+          {note.type === "pdf" ? (
+            <a
+              href={note.content}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 px-4 py-3 text-sm"
+              style={{ background: T.card, border: `1px solid ${T.line}`, color: "#6FA3F5" }}
+            >
+              <FileText size={16} /> Open PDF
+            </a>
+          ) : (
+            <div className="text-sm whitespace-pre-wrap leading-relaxed" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>
+              {note.content}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1147,32 +1182,76 @@ function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
                   />
-                  <textarea
-                    value={newNote.content}
-                    onChange={(e) => setNewNote({ ...newNote, content: e.target.value })}
-                    rows={6}
-                    placeholder="Write or paste the note content…"
-                    className="w-full px-3 py-2"
-                    style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
-                  />
+                  <div className="flex gap-2">
+                    {["text", "pdf"].map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setNewNote({ ...newNote, type: t, content: "" })}
+                        className="px-3 py-1.5 text-xs uppercase"
+                        style={{
+                          border: `1px solid ${T.ink}`,
+                          background: newNote.type === t ? T.ink : "transparent",
+                          color: newNote.type === t ? T.paper : T.ink,
+                        }}
+                      >
+                        {t === "pdf" ? "PDF file" : "Written text"}
+                      </button>
+                    ))}
+                  </div>
+                  {newNote.type === "pdf" ? (
+                    <div>
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setPdfUploading(true);
+                          const { url, error } = await uploadNotePdf(file);
+                          setPdfUploading(false);
+                          if (!url) {
+                            alert("Could not upload this PDF. Make sure a public 'notes-pdfs' Storage bucket exists in Supabase, then try again.\n\n" + (error?.message || ""));
+                            return;
+                          }
+                          setNewNote((prevNote) => ({ ...prevNote, content: url }));
+                        }}
+                        className="w-full text-sm"
+                        style={{ color: T.ink }}
+                      />
+                      {pdfUploading && <div className="text-xs mt-1" style={{ color: T.inkSoft }}>Uploading PDF…</div>}
+                      {!pdfUploading && newNote.content && (
+                        <div className="text-xs mt-1" style={{ color: T.emerald }}>✓ PDF uploaded — ready to save.</div>
+                      )}
+                    </div>
+                  ) : (
+                    <textarea
+                      value={newNote.content}
+                      onChange={(e) => setNewNote({ ...newNote, content: e.target.value })}
+                      rows={6}
+                      placeholder="Write or paste the note content…"
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                    />
+                  )}
                   <div className="flex gap-2">
                     <button
                       onClick={async () => {
                         if (!newNote.title.trim() || !newNote.content.trim()) {
-                          alert("Please fill in the title and content.");
+                          alert(newNote.type === "pdf" ? "Please choose a title and upload a PDF." : "Please fill in the title and content.");
                           return;
                         }
-                        await onAddNote(prog, subject, newNote.title.trim(), newNote.content.trim());
-                        setNewNote({ title: "", content: "" });
+                        await onAddNote(prog, subject, newNote.title.trim(), newNote.content.trim(), newNote.type);
+                        setNewNote({ title: "", type: "text", content: "" });
                         setShowAddForm(false);
                       }}
-                      className="px-4 py-2 text-sm"
+                      disabled={pdfUploading}
+                      className="px-4 py-2 text-sm disabled:opacity-50"
                       style={{ background: T.emerald, color: "#fff" }}
                     >
                       Save note
                     </button>
                     <button
-                      onClick={() => { setShowAddForm(false); setNewNote({ title: "", content: "" }); }}
+                      onClick={() => { setShowAddForm(false); setNewNote({ title: "", type: "text", content: "" }); }}
                       className="px-4 py-2 text-sm"
                       style={{ border: `1px solid ${T.ink}` }}
                     >
@@ -1195,7 +1274,11 @@ function NotesFlow({ notesBank, programs, onExit, isAdmin, onAddNote }) {
                   className="w-full text-left p-4 flex items-center gap-3"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
-                  <StickyNote size={18} style={{ color: T.amber }} />
+                  {n.type === "pdf" ? (
+                    <FileText size={18} style={{ color: "#6FA3F5" }} />
+                  ) : (
+                    <StickyNote size={18} style={{ color: T.amber }} />
+                  )}
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{n.title}</span>
                 </button>
               ))}
@@ -1277,7 +1360,7 @@ function SearchOverlay({ bank, notesBank, onClose }) {
         (n) =>
           n.title.toLowerCase().includes(query) ||
           (n.subject || "").toLowerCase().includes(query) ||
-          (n.content || "").toLowerCase().includes(query)
+          (n.type !== "pdf" && (n.content || "").toLowerCase().includes(query))
       )
       .slice(0, 25);
   }, [notesBank, query]);
@@ -1347,7 +1430,19 @@ function SearchOverlay({ bank, notesBank, onClose }) {
               <button onClick={() => setOpenNote(null)}><X size={14} /></button>
             </div>
             <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="mb-3 text-lg">{openNote.title}</div>
-            <div className="text-sm whitespace-pre-wrap">{openNote.content}</div>
+            {openNote.type === "pdf" ? (
+              <a
+                href={openNote.content}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm"
+                style={{ background: T.paper, border: `1px solid ${T.line}`, color: "#6FA3F5" }}
+              >
+                <FileText size={16} /> Open PDF
+              </a>
+            ) : (
+              <div className="text-sm whitespace-pre-wrap">{openNote.content}</div>
+            )}
           </div>
         )}
 
@@ -3283,7 +3378,7 @@ function AdminGate({ onUnlock, onBack }) {
   );
 }
 
-const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", content: "" };
+const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", type: "text", content: "" };
 const EMPTY_NOTIF_FORM = { title: "", message: "" };
 
 function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, onExit }) {
@@ -3297,11 +3392,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
 
   const [noteForm, setNoteForm] = useState(EMPTY_NOTE_FORM);
   const [editingNoteId, setEditingNoteId] = useState(null);
+  const [notePdfUploading, setNotePdfUploading] = useState(false);
   const [notifForm, setNotifForm] = useState(EMPTY_NOTIF_FORM);
 
   const saveNoteForm = async () => {
     if (!noteForm.subject.trim() || !noteForm.title.trim() || !noteForm.content.trim()) {
-      alert("Please fill in subject, title, and content.");
+      alert(noteForm.type === "pdf" ? "Please fill in subject and title, and upload a PDF." : "Please fill in subject, title, and content.");
       return;
     }
     const prevNotes = notesBank;
@@ -3321,7 +3417,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     setNoteForm(EMPTY_NOTE_FORM);
     setEditingNoteId(null);
   };
-  const startEditNote = (n) => { setNoteForm({ ...n }); setEditingNoteId(n.id); };
+  const startEditNote = (n) => { setNoteForm({ type: "text", ...n }); setEditingNoteId(n.id); };
   const removeNote = async (id) => {
     const prev = notesBank;
     const next = notesBank.filter((n) => n.id !== id);
@@ -4068,18 +4164,64 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               />
             </div>
             <div className="mb-4">
-              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Content</label>
-              <textarea
-                value={noteForm.content}
-                onChange={(e) => setNoteForm({ ...noteForm, content: e.target.value })}
-                rows={8}
-                placeholder="Write or paste the note content here…"
-                className="w-full px-3 py-2"
-                style={{ border: `1px solid ${T.line}`, background: T.card }}
-              />
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Note type</label>
+              <div className="flex gap-2">
+                {["text", "pdf"].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setNoteForm({ ...noteForm, type: t, content: "" })}
+                    className="px-3 py-1.5 text-xs uppercase"
+                    style={{
+                      border: `1px solid ${T.ink}`,
+                      background: noteForm.type === t ? T.ink : "transparent",
+                      color: noteForm.type === t ? T.paper : T.ink,
+                    }}
+                  >
+                    {t === "pdf" ? "PDF file" : "Written text"}
+                  </button>
+                ))}
+              </div>
             </div>
+            {noteForm.type === "pdf" ? (
+              <div className="mb-4">
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>PDF file</label>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setNotePdfUploading(true);
+                    const { url, error } = await uploadNotePdf(file);
+                    setNotePdfUploading(false);
+                    if (!url) {
+                      alert("Could not upload this PDF. Make sure a public 'notes-pdfs' Storage bucket exists in Supabase, then try again.\n\n" + (error?.message || ""));
+                      return;
+                    }
+                    setNoteForm((prevForm) => ({ ...prevForm, content: url }));
+                  }}
+                  className="w-full text-sm"
+                />
+                {notePdfUploading && <div className="text-xs mt-1" style={{ color: T.inkSoft }}>Uploading PDF…</div>}
+                {!notePdfUploading && noteForm.content && (
+                  <div className="text-xs mt-1" style={{ color: T.emerald }}>✓ PDF uploaded — ready to save.</div>
+                )}
+              </div>
+            ) : (
+              <div className="mb-4">
+                <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Content</label>
+                <textarea
+                  value={noteForm.content}
+                  onChange={(e) => setNoteForm({ ...noteForm, content: e.target.value })}
+                  rows={8}
+                  placeholder="Write or paste the note content here…"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
+                />
+              </div>
+            )}
             <div className="flex gap-3 mb-8">
-              <button onClick={saveNoteForm} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
+              <button onClick={saveNoteForm} disabled={notePdfUploading} className="flex items-center gap-2 px-5 py-2 text-sm disabled:opacity-50" style={{ background: T.ink, color: T.paper }}>
                 <Save size={16} /> {editingNoteId ? "Save changes" : "Add note"}
               </button>
               {editingNoteId && (
@@ -4101,7 +4243,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 <div key={n.id} className="p-4 flex items-start justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
                   <div>
                     <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
-                      {n.program} · {n.subject}
+                      {n.program} · {n.subject} {n.type === "pdf" ? "· PDF" : ""}
                     </div>
                     <div style={{ fontFamily: "'Source Serif 4', serif" }}>{n.title}</div>
                   </div>
@@ -4405,10 +4547,15 @@ export default function App() {
   };
 
   // ---- Quick "add note" from inside the Notes tab (admin only) ----
-  const quickAddNote = async (programKey, subjectName, title, content) => {
-    const next = [...notesBank, { id: uid(), program: programKey, subject: subjectName, title, content }];
+  const quickAddNote = async (programKey, subjectName, title, content, type = "text") => {
+    const prev = notesBank;
+    const next = [...notesBank, { id: uid(), program: programKey, subject: subjectName, title, type, content }];
     setNotesBank(next);
-    await saveNotes(next);
+    const ok = await saveNotes(next);
+    if (!ok) {
+      setNotesBank(prev);
+      alert("Could not save this note — check your internet connection and try again.");
+    }
   };
 
   const finishQuiz = async (res) => {
