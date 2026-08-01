@@ -38,14 +38,30 @@ export async function loadSharedData() {
   }
 }
 
+// IMPORTANT: this writes ONLY the fields passed in `partial` directly to the row,
+// instead of the old approach (read the whole row, merge in memory, then write it
+// all back). That old approach caused a race condition: if two saves happened close
+// together (e.g. deleting two questions quickly), the second save could read stale
+// data (from before the first save finished) and overwrite the first save's result —
+// making a deleted question "come back" a little while later. A direct update has
+// no such race. Returns true/false so callers know whether the save actually worked.
 export async function saveSharedData(partial) {
   try {
-    const current = (await loadSharedData()) || {};
-    const merged = { id: 1, ...current, ...partial };
-    const { error } = await supabase.from("app_data").upsert(merged);
+    const { data, error } = await supabase
+      .from("app_data")
+      .update(partial)
+      .eq("id", 1)
+      .select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      // No row with id=1 yet (only happens on the very first save ever) — create it.
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, ...partial });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Supabase save failed:", e);
+    return false;
   }
 }
 
@@ -118,10 +134,16 @@ export async function loadNotes() {
 }
 export async function saveNotes(notes) {
   try {
-    const { error } = await supabase.from("app_data").update({ notes }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ notes }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, notes });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save notes failed (add a 'notes' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -139,10 +161,16 @@ export async function loadNotifications() {
 }
 export async function saveNotifications(notifications) {
   try {
-    const { error } = await supabase.from("app_data").update({ notifications }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ notifications }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, notifications });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save notifications failed (add a 'notifications' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -160,10 +188,16 @@ export async function loadReviews() {
 }
 export async function saveReviews(reviews) {
   try {
-    const { error } = await supabase.from("app_data").update({ reviews }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ reviews }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, reviews });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save reviews failed (add a 'reviews' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -181,10 +215,16 @@ export async function loadSyllabusItems() {
 }
 export async function saveSyllabusItems(syllabus) {
   try {
-    const { error } = await supabase.from("app_data").update({ syllabus }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ syllabus }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, syllabus });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -202,10 +242,16 @@ export async function loadGuidelineItems() {
 }
 export async function saveGuidelineItems(guidelines) {
   try {
-    const { error } = await supabase.from("app_data").update({ guidelines }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ guidelines }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, guidelines });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -223,10 +269,16 @@ export async function loadContactItems() {
 }
 export async function saveContactItems(contact_items) {
   try {
-    const { error } = await supabase.from("app_data").update({ contact_items }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ contact_items }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, contact_items });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -244,10 +296,16 @@ export async function loadSocialLinksMap() {
 }
 export async function saveSocialLinksMap(social_links) {
   try {
-    const { error } = await supabase.from("app_data").update({ social_links }).eq("id", 1);
+    const { data, error } = await supabase.from("app_data").update({ social_links }).eq("id", 1).select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, social_links });
+      if (insertError) throw insertError;
+    }
+    return true;
   } catch (e) {
     console.error("Save social links failed (add a 'social_links' jsonb column to app_data):", e);
+    return false;
   }
 }
 
@@ -445,7 +503,11 @@ const MDCAT_TOPICS = {
     "Dawn of Modern Physics", "Atomic Spectra", "Nuclear Physics",
   ],
   English: [
-    "Reading and Thinking Skills", "Formal and Lexical Aspects of Language", "Writing Skills",
+    "Sentence Structure/Types of Sentence", "Parts of Speech", "Nouns, Pronouns & Articles",
+    "Subject-Verb Agreement", "Verb Forms", "Tenses", "Conditional Sentences",
+    "Active & Passive Voice", "Direct & Indirect Speech", "Conjunctions", "Phrases & Clauses",
+    "Prepositions", "Punctuation", "Error Detection", "Modifiers & Additional Grammar",
+    "Reading Comprehension", "Vocabulary",
   ],
 };
 
@@ -516,14 +578,14 @@ async function loadBank() {
   return data && data.bank ? data.bank : null;
 }
 async function saveBank(bank) {
-  await saveSharedData({ bank });
+  return await saveSharedData({ bank });
 }
 async function loadPasscode() {
   const data = await loadSharedData();
   return data && data.passcode ? data.passcode : null;
 }
 async function savePasscode(pc) {
-  await saveSharedData({ passcode: pc });
+  return await saveSharedData({ passcode: pc });
 }
 
 // ---------- Bulk PDF -> AI MCQ extraction helpers ----------
@@ -3204,6 +3266,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       alert("Please fill in subject, title, and content.");
       return;
     }
+    const prevNotes = notesBank;
     let next;
     if (editingNoteId) {
       next = notesBank.map((n) => (n.id === editingNoteId ? { ...noteForm, id: editingNoteId } : n));
@@ -3211,15 +3274,25 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       next = [...notesBank, { ...noteForm, id: uid() }];
     }
     setNotesBank(next);
-    await saveNotes(next);
+    const ok = await saveNotes(next);
+    if (!ok) {
+      setNotesBank(prevNotes);
+      alert("Could not save this note — check your internet connection and try again.");
+      return;
+    }
     setNoteForm(EMPTY_NOTE_FORM);
     setEditingNoteId(null);
   };
   const startEditNote = (n) => { setNoteForm({ ...n }); setEditingNoteId(n.id); };
   const removeNote = async (id) => {
+    const prev = notesBank;
     const next = notesBank.filter((n) => n.id !== id);
     setNotesBank(next);
-    await saveNotes(next);
+    const ok = await saveNotes(next);
+    if (!ok) {
+      setNotesBank(prev);
+      alert("Could not delete this note — check your internet connection and try again.");
+    }
   };
 
   const addNotification = async () => {
@@ -3227,15 +3300,26 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       alert("Please fill in a title and message.");
       return;
     }
+    const prev = notifications;
     const next = [...notifications, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
     setNotifications(next);
-    await saveNotifications(next);
+    const ok = await saveNotifications(next);
+    if (!ok) {
+      setNotifications(prev);
+      alert("This notification was NOT sent — it could not be saved to the database, so students would not have seen it. Check your internet connection and try again.");
+      return;
+    }
     setNotifForm(EMPTY_NOTIF_FORM);
   };
   const removeNotification = async (id) => {
+    const prev = notifications;
     const next = notifications.filter((n) => n.id !== id);
     setNotifications(next);
-    await saveNotifications(next);
+    const ok = await saveNotifications(next);
+    if (!ok) {
+      setNotifications(prev);
+      alert("Could not delete this notification — check your internet connection and try again.");
+    }
   };
 
   const [bulkForm, setBulkForm] = useState({ program: "MDCAT", year: "", block: "", subject: "", topic: "", source: "Past Paper" });
@@ -3359,9 +3443,15 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       setBulkError("No questions selected to add.");
       return;
     }
+    const prevBank = bank;
     const next = [...bank, ...toAdd];
     setBank(next);
-    await saveBank(next);
+    const ok = await saveBank(next);
+    if (!ok) {
+      setBank(prevBank);
+      alert("Could not save these questions — check your internet connection and try again.");
+      return;
+    }
     setBulkResults([]);
     setBulkSummary("");
     setBulkStatus("idle");
@@ -3380,9 +3470,14 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const startEdit = (q) => { setForm({ ...q, options: [...q.options] }); setEditingId(q.id); setTab("form"); };
 
   const remove = async (id) => {
+    const prev = bank;
     const next = bank.filter((q) => q.id !== id);
     setBank(next);
-    await saveBank(next);
+    const ok = await saveBank(next);
+    if (!ok) {
+      setBank(prev);
+      alert("Could not delete this question — check your internet connection and try again.");
+    }
   };
 
   const submit = async () => {
@@ -3407,16 +3502,22 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     } else {
       next = [...bank, { ...form, id: uid() }];
     }
+    const prevBank = bank;
     setBank(next);
-    await saveBank(next);
+    const ok = await saveBank(next);
+    if (!ok) {
+      setBank(prevBank);
+      alert("Could not save this question — check your internet connection and try again.");
+      return;
+    }
     setTab("list");
   };
 
   const changePass = async () => {
     if (!newPass.trim()) return;
-    await savePasscode(newPass.trim());
-    setPassMsg("Passcode updated.");
-    setNewPass("");
+    const ok = await savePasscode(newPass.trim());
+    setPassMsg(ok ? "Passcode updated." : "Could not update passcode — check your internet connection and try again.");
+    if (ok) setNewPass("");
     setTimeout(() => setPassMsg(""), 2500);
   };
 
