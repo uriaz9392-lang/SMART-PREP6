@@ -7,7 +7,7 @@ import {
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
-  Instagram, Facebook, Music2,
+  Instagram, Facebook, Music2, Brain,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -490,6 +490,7 @@ const SUBJECT_ICONS = {
   Chemistry: FlaskConical,
   Physics: Atom,
   English: BookOpen,
+  "Logical Reasoning": Brain,
 };
 function subjectIcon(name) {
   return SUBJECT_ICONS[name] || ClipboardList;
@@ -501,6 +502,7 @@ const SUBJECT_COLORS = {
   Chemistry: "#7C5CD6",
   Physics: "#2E7FE0",
   English: "#E0812E",
+  "Logical Reasoning": "#C2437A",
 };
 const FOLDER_PALETTE = [
   "#1F9D6B", "#7C5CD6", "#2E7FE0", "#E0812E", "#D6455C",
@@ -543,6 +545,8 @@ const MDCAT_TOPICS = {
     "Prepositions", "Punctuation", "Error Detection", "Modifiers & Additional Grammar",
     "Figures of Speech", "Reading Comprehension", "Vocabulary",
   ],
+  // No sub-topics on purpose — tapping this subject goes straight to practice setup.
+  "Logical Reasoning": [],
 };
 
 const MBBS_STRUCTURE = {
