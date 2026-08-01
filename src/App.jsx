@@ -3640,6 +3640,28 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     }
   };
 
+  // Deletes every question currently matching the search/program filters in one go
+  // (e.g. filter to "Chemistry" and wipe the whole subject instead of deleting one by one).
+  const bulkDeleteFiltered = async () => {
+    if (filtered.length === 0) return;
+    const ok1 = window.confirm(
+      `Delete all ${filtered.length} matching question(s)? This cannot be undone.`
+    );
+    if (!ok1) return;
+    const prev = bank;
+    const fresh = (await loadBank()) || bank;
+    const idsToRemove = new Set(filtered.map((q) => q.id));
+    const next = fresh.filter((q) => !idsToRemove.has(q.id));
+    setBank(next);
+    const ok = await saveBank(next);
+    if (!ok) {
+      setBank(prev);
+      alert("Could not delete these questions — check your internet connection and try again.");
+    } else {
+      alert(`${idsToRemove.size} question(s) deleted.`);
+    }
+  };
+
   const submit = async () => {
     if (!form.question.trim() || form.options.some((o) => !o.trim())) {
       alert("Please fill in the question and all four options.");
@@ -3745,6 +3767,15 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               </select>
               <button onClick={startAdd} className="ml-auto flex items-center gap-1 px-4 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
                 <Plus size={16} /> Add MCQ
+              </button>
+              <button
+                onClick={bulkDeleteFiltered}
+                disabled={filtered.length === 0}
+                className="flex items-center gap-1 px-4 py-2 text-sm disabled:opacity-40"
+                style={{ border: `1px solid ${T.rose}`, color: T.rose }}
+                title="Deletes every question currently shown below (matching your search/program filter)"
+              >
+                <Trash2 size={16} /> Delete all filtered ({filtered.length})
               </button>
             </div>
 
