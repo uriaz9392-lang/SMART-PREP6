@@ -812,7 +812,10 @@ function InfoFolderPage({ title, icon: Icon, color, onBack, children }) {
 
 // ---------- Generic admin-editable content list (used for Syllabus & Guidelines) ----------
 // Everyone can read the items. The "+ Add item" form only renders when isAdmin is true.
-function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRemove, onBack, emptyText, addLabel }) {
+// Items are organised into a folder per program (MDCAT / KMU CAT / MBBS / BSN) — pick a
+// program first, then see/add items just for that program, same pattern as Notes.
+function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRemove, onBack, emptyText, addLabel, programs }) {
+  const [prog, setProg] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ title: "", type: "link", value: "" });
 
@@ -821,13 +824,46 @@ function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRe
       alert(`Please fill in the title and ${form.type === "text" ? "content" : "link"}.`);
       return;
     }
-    await onAdd({ title: form.title.trim(), type: form.type, value: form.value.trim() });
+    await onAdd({ title: form.title.trim(), type: form.type, value: form.value.trim(), program: prog });
     setForm({ title: "", type: "link", value: "" });
     setShowForm(false);
   };
 
+  // Step 1: choose a program folder (e.g. "MDCAT Syllabus", "BSN Syllabus", …)
+  if (!prog) {
+    return (
+      <InfoFolderPage title={title} icon={Icon} color={color} onBack={onBack}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {(programs || []).map((p) => {
+            const PIcon = p.icon;
+            const n = (items || []).filter((it) => it.program === p.key).length;
+            return (
+              <button
+                key={p.key}
+                disabled={n === 0 && !isAdmin}
+                onClick={() => setProg(p.key)}
+                className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
+              >
+                <PIcon size={22} />
+                <div>
+                  <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
+                  <div className="text-xs" style={{ color: T.inkSoft }}>{n} item{n === 1 ? "" : "s"}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </InfoFolderPage>
+    );
+  }
+
+  // Step 2: items inside the chosen program's folder
+  const progInfo = (programs || []).find((p) => p.key === prog);
+  const progItems = (items || []).filter((it) => it.program === prog);
+
   return (
-    <InfoFolderPage title={title} icon={Icon} color={color} onBack={onBack}>
+    <InfoFolderPage title={`${title} — ${progInfo ? progInfo.label : prog}`} icon={Icon} color={color} onBack={() => setProg(null)}>
       {isAdmin && (
         <div className="mb-6">
           {!showForm ? (
@@ -898,11 +934,11 @@ function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRe
         </div>
       )}
 
-      {(!items || items.length === 0) ? (
+      {(!progItems || progItems.length === 0) ? (
         <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>{emptyText}</div>
       ) : (
         <div className="space-y-3">
-          {items.map((it) => (
+          {progItems.map((it) => (
             <div key={it.id} className="p-4 flex items-start justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
               <div className="flex-1 min-w-0">
                 <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="mb-1">{it.title}</div>
@@ -1864,6 +1900,7 @@ function Home({
           onRemove={onRemoveSyllabus}
           addLabel="Add syllabus item"
           emptyText="The syllabus breakdown will appear here soon."
+          programs={programs}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
@@ -1883,6 +1920,7 @@ function Home({
           onRemove={onRemoveGuideline}
           addLabel="Add guideline item"
           emptyText="Exam & app guidelines will appear here soon."
+          programs={programs}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
