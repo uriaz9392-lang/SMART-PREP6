@@ -529,7 +529,7 @@ const MDCAT_TOPICS = {
     "Subject-Verb Agreement", "Verb Forms", "Tenses", "Conditional Sentences",
     "Active & Passive Voice", "Direct & Indirect Speech", "Conjunctions", "Phrases & Clauses",
     "Prepositions", "Punctuation", "Error Detection", "Modifiers & Additional Grammar",
-    "Reading Comprehension", "Vocabulary",
+    "Figures of Speech", "Reading Comprehension", "Vocabulary",
   ],
 };
 
