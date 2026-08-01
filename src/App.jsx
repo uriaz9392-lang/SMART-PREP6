@@ -726,6 +726,17 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// True random shuffle (Fisher–Yates) — used so the same subject/topic doesn't
+// always serve questions in the same fixed order every time someone practices.
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // ---------- Fonts ----------
 function FontLoader() {
   useEffect(() => {
@@ -2679,7 +2690,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 
         <button
           disabled={maxCount === 0}
-          onClick={() => onStart(filtered.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
+          onClick={() => onStart(shuffleArray(filtered).slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
           className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
           style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
         >
