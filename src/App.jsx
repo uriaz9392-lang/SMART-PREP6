@@ -7,7 +7,7 @@ import {
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
-  Instagram, Facebook, Music2, Brain,
+  Instagram, Facebook, Music2, Brain, FileCheck2,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -348,7 +348,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -363,6 +363,7 @@ export async function loadUserStats(userId) {
       streak: data.streak || 0,
       lastChallengeDate: data.last_challenge_date || null,
       name: data.name || "",
+      flpUsed: data.flp_used || {},
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -383,6 +384,7 @@ export async function saveUserStats(userId, stats) {
       streak: stats.streak || 0,
       last_challenge_date: stats.lastChallengeDate || null,
       name: stats.name || "",
+      flp_used: stats.flpUsed || {},
     });
     if (error) throw error;
   } catch (e) {
@@ -447,7 +449,7 @@ const PROGRAMS = [
     links: [
       { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "Mock Exam", icon: FileText, action: "open" },
+      { label: "FLP", icon: FileCheck2, action: "flp" },
     ],
   },
   {
@@ -456,7 +458,7 @@ const PROGRAMS = [
     links: [
       { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Notes", icon: BookOpen, action: "soon" },
-      { label: "Mock Exam", icon: FileText, action: "open" },
+      { label: "FLP", icon: FileCheck2, action: "flp" },
     ],
   },
   {
@@ -555,6 +557,37 @@ const MBBS_STRUCTURE = {
     "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
     "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
   },
+};
+
+// ---------- FLP (Full Length Paper) — auto-generated exam blueprints ----------
+// For each program: total question count, total time (in seconds), and how many
+// questions come from each subject. MBBS and BSN are left unconfigured for now
+// (set to null) — their FLP folders show "coming soon" until numbers are provided.
+const FLP_CONFIG = {
+  MDCAT: {
+    totalMcqs: 180,
+    timeSeconds: 3 * 60 * 60, // 3 hours
+    breakdown: {
+      Biology: 81,
+      Chemistry: 45,
+      Physics: 36,
+      English: 9,
+      "Logical Reasoning": 9,
+    },
+  },
+  KMUCAT: {
+    totalMcqs: 100,
+    timeSeconds: 1 * 60 * 60, // 1 hour
+    breakdown: {
+      Biology: 45,
+      Chemistry: 25,
+      Physics: 20,
+      English: 5,
+      "Logical Reasoning": 5,
+    },
+  },
+  MBBS: null, // configuration to be provided later
+  BSN: null, // configuration to be provided later
 };
 
 const SEED_MCQS = [
@@ -741,6 +774,37 @@ function shuffleArray(arr) {
   return a;
 }
 
+// ---------- FLP (Full Length Paper) auto-generator ----------
+// Builds one full-length paper for `program` using FLP_CONFIG's subject breakdown.
+// For each subject it prefers MCQs the student hasn't seen in a previous FLP attempt
+// (tracked via usedIds, a Set of question ids from stats.flpUsed[program]). Once every
+// question in a subject has been used at least once, that subject's "unused" pool
+// automatically resets for this generation — so it cycles through fresh sets over time
+// instead of ever getting stuck. Returns { questions, shortfalls } where shortfalls
+// lists any subject that doesn't yet have enough MCQs in the bank to fully meet its quota.
+function buildFLPExam(bank, program, usedIds) {
+  const config = FLP_CONFIG[program];
+  if (!config) return { questions: [], shortfalls: [] };
+  const used = usedIds instanceof Set ? usedIds : new Set(usedIds || []);
+  const shortfalls = [];
+  let questions = [];
+
+  Object.entries(config.breakdown).forEach(([subject, needed]) => {
+    const pool = bank.filter((q) => q.program === program && q.subject === subject);
+    let unused = pool.filter((q) => !used.has(q.id));
+    // Every question in this subject has already appeared in a past FLP — start a fresh cycle.
+    if (unused.length === 0 && pool.length > 0) unused = pool;
+
+    const picked = shuffleArray(unused).slice(0, needed);
+    if (picked.length < needed) {
+      shortfalls.push({ subject, needed, available: pool.length });
+    }
+    questions = questions.concat(picked);
+  });
+
+  return { questions, shortfalls };
+}
+
 // ---------- Fonts ----------
 function FontLoader() {
   useEffect(() => {
@@ -787,7 +851,7 @@ function BottomNav({ tab, setTab, onSaved }) {
   const items = [
     { key: "home", label: "Home", icon: HomeIcon },
     { key: "pastpapers", label: "Past Papers", icon: FileText },
-    { key: "mockexam", label: "Mock Exam", icon: ClipboardCheck },
+    { key: "flp", label: "FLP", icon: FileCheck2 },
     { key: "notes", label: "Notes", icon: BookOpen },
     { key: "saved", label: "Saved", icon: Bookmark },
   ];
@@ -1830,7 +1894,7 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
 // ---------- Home: dashboard ----------
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
-  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard,
+  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
   notesBank, notifications, onRefreshNotifications, isAdmin,
   reviews, onAddReview,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
@@ -1928,30 +1992,44 @@ function Home({
       </div>
     );
   }
-  if (navTab === "mockexam") {
+  if (navTab === "flp") {
+    const FLP_ICON_COLORS = { MDCAT: "#2E63D6", KMUCAT: "#7C5CD6", BSN: "#1F9D6B", MBBS: "#B5822A" };
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
         <div className="max-w-5xl mx-auto px-6 py-10">
-          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-2">Mock Exam</h2>
-          <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Pick a program, then choose "Timed Mock Exam" before you start.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-2">Full Length Paper</h2>
+          <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
+            Pick a program to auto-generate a full length paper from the question bank, timed and subject-weighted like the real exam.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {programs.map((p) => {
               const Icon = p.icon;
-              const n = counts[p.key] || 0;
+              const config = FLP_CONFIG[p.key];
               return (
                 <button
                   key={p.key}
-                  disabled={n === 0}
-                  onClick={() => onOpenProgram(p.key)}
-                  className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
+                  onClick={() => onOpenFLP(p.key)}
+                  className="text-left p-5 flex items-center gap-4"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
-                  <Icon size={22} />
-                  <div>
-                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
-                    <div className="text-xs" style={{ color: T.inkSoft }}>{n} question{n === 1 ? "" : "s"}</div>
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, borderRadius: "50%", background: FLP_ICON_COLORS[p.key] || T.blue }}
+                  >
+                    <Icon size={22} style={{ color: "#fff" }} />
                   </div>
+                  <div className="flex-1">
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
+                    {config ? (
+                      <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                        {config.totalMcqs} MCQs · {Math.round(config.timeSeconds / 60)} min
+                      </div>
+                    ) : (
+                      <div className="text-xs mt-1" style={{ color: T.inkSoft }}>Coming soon</div>
+                    )}
+                  </div>
+                  <ChevronRight size={16} style={{ color: T.inkSoft }} />
                 </button>
               );
             })}
@@ -2247,7 +2325,7 @@ function Home({
                     return (
                       <button
                         key={l.label}
-                        onClick={() => (l.action === "open" ? onOpenProgram(p.key) : soon(l.label))}
+                        onClick={() => (l.action === "open" ? onOpenProgram(p.key) : l.action === "flp" ? onOpenFLP(p.key) : soon(l.label))}
                         className="flex items-center justify-between px-3 py-2 text-sm text-left"
                         style={{ background: "rgba(255,255,255,0.08)", borderRadius: 8 }}
                       >
@@ -2687,7 +2765,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
           <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
             <input type="checkbox" checked={timed} onChange={(e) => setTimed(e.target.checked)} />
             <span>
-              Timed Mock Exam ({SECONDS_PER_Q}s per question — {Math.round((chosenCount * SECONDS_PER_Q) / 60)} min total)
+              Timed Practice ({SECONDS_PER_Q}s per question — {Math.round((chosenCount * SECONDS_PER_Q) / 60)} min total)
             </span>
           </label>
         </div>
@@ -4494,7 +4572,7 @@ export default function App() {
       setGuidelineItems(gui);
       setContactItems(con);
       setSocialLinks(sl);
-      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "" };
+      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {} };
       if (user) {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
@@ -4600,6 +4678,28 @@ export default function App() {
     startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
   };
 
+  const openFLP = (program) => {
+    const config = FLP_CONFIG[program];
+    const progLabel = PROGRAMS.find((p) => p.key === program)?.label || program;
+    if (!config) {
+      alert(`Full Length Paper for ${progLabel} is coming soon.`);
+      return;
+    }
+    const usedIds = new Set((stats?.flpUsed && stats.flpUsed[program]) || []);
+    const { questions, shortfalls } = buildFLPExam(bank, program, usedIds);
+    if (questions.length === 0) {
+      alert(`No questions available yet for the ${progLabel} Full Length Paper. Ask your admin to add MCQs first.`);
+      return;
+    }
+    if (shortfalls.length > 0) {
+      const lines = shortfalls.map((s) => `${s.subject}: have ${s.available}, need ${s.needed}`).join("\n");
+      alert(`Heads up — the question bank doesn't have enough MCQs yet for a full ${progLabel} paper:\n${lines}\n\nStarting with what's available (${questions.length} questions).`);
+    }
+    setQuizQuestions(questions);
+    setQuizMeta({ label: `${progLabel} — Full Length Paper`, timeLimit: config.timeSeconds, mode: "flp", flpProgram: program });
+    setView("quiz");
+  };
+
   const toggleBookmark = async (qid) => {
     const current = stats?.bookmarks || [];
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
@@ -4700,6 +4800,15 @@ export default function App() {
       }
     }
 
+    // FLP: remember which questions this student has already seen for this program,
+    // so the next auto-generated paper prefers fresh ones instead of repeating.
+    let flpUsed = stats?.flpUsed || {};
+    if (quizMeta.mode === "flp" && quizMeta.flpProgram) {
+      const priorUsed = new Set(flpUsed[quizMeta.flpProgram] || []);
+      res.questions.forEach((qq) => priorUsed.add(qq.id));
+      flpUsed = { ...flpUsed, [quizMeta.flpProgram]: Array.from(priorUsed) };
+    }
+
     const next = {
       totalAttempted: (stats?.totalAttempted || 0) + res.questions.length,
       totalCorrect: (stats?.totalCorrect || 0) + res.correct,
@@ -4710,6 +4819,7 @@ export default function App() {
       streak,
       lastChallengeDate,
       name: user?.user_metadata?.name || stats?.name || "",
+      flpUsed,
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -4784,6 +4894,7 @@ export default function App() {
         onReviewMistakes={openReviewMistakes}
         onOpenSaved={openSaved}
         onOpenLeaderboard={() => setView("leaderboard")}
+        onOpenFLP={openFLP}
         notesBank={notesBank}
         notifications={notifications}
         onRefreshNotifications={refreshNotifications}
