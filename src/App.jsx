@@ -602,6 +602,13 @@ const COURSES = PROGRAMS.map((p) => ({ key: p.key, label: p.label }));
 // Programs that use the same fixed Subject -> Topic folder structure as MDCAT
 const TOPIC_PROGRAMS = ["MDCAT", "KMUCAT"];
 
+// A special pseudo-subject admins can pick when adding past-paper MCQs, since a
+// real past paper mixes subjects the way the exam does. It's deliberately absent
+// from MDCAT_TOPICS, so the app's existing "no topics defined = topic not required"
+// logic already skips the Topic step for it — topic is instead auto-set to match
+// the Source label (the past-paper folder name) when saving.
+const PAST_PAPERS_SUBJECT = "Past Papers";
+
 const SUBJECT_ICONS = {
   Biology: Dna,
   Chemistry: FlaskConical,
@@ -4240,7 +4247,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         year: bulkForm.program === "MBBS" ? bulkForm.year : "",
         block: bulkForm.program === "MBBS" ? bulkForm.block : "",
         subject: bulkForm.subject,
-        topic: TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : "",
+        topic: bulkForm.subject === PAST_PAPERS_SUBJECT ? bulkForm.source : (TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : ""),
         source: bulkForm.source,
         question: m.question,
         options: m.options,
@@ -4339,11 +4346,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     }
     const prevBank = bank;
     const fresh = (await loadBank()) || bank;
+    const formToSave = form.subject === PAST_PAPERS_SUBJECT ? { ...form, topic: form.source } : form;
     let next;
     if (editingId) {
-      next = fresh.map((q) => (q.id === editingId ? { ...form, id: editingId } : q));
+      next = fresh.map((q) => (q.id === editingId ? { ...formToSave, id: editingId } : q));
     } else {
-      next = [...fresh, { ...form, id: uid() }];
+      next = [...fresh, { ...formToSave, id: uid() }];
     }
     setBank(next);
     const ok = await saveBank(next);
@@ -4515,6 +4523,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
+                    <option value={PAST_PAPERS_SUBJECT}>{PAST_PAPERS_SUBJECT} (mixed subjects)</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -4533,7 +4542,11 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     </select>
                   ) : (
                     <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
-                      {form.subject ? "No sub-topics for this subject" : "Choose subject first"}
+                      {form.subject === PAST_PAPERS_SUBJECT
+                        ? "Auto-set to match Source above"
+                        : form.subject
+                        ? "No sub-topics for this subject"
+                        : "Choose subject first"}
                     </div>
                   )}
                 </div>
@@ -4685,6 +4698,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">Select subject…</option>
+                    <option value={PAST_PAPERS_SUBJECT}>{PAST_PAPERS_SUBJECT} (mixed subjects)</option>
                     {Object.keys(MDCAT_TOPICS).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
@@ -4703,7 +4717,11 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     </select>
                   ) : (
                     <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
-                      {bulkForm.subject ? "No sub-topics for this subject" : "Choose subject first"}
+                      {bulkForm.subject === PAST_PAPERS_SUBJECT
+                        ? "Auto-set to match Source label above"
+                        : bulkForm.subject
+                        ? "No sub-topics for this subject"
+                        : "Choose subject first"}
                     </div>
                   )}
                 </div>
