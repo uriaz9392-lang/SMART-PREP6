@@ -802,6 +802,22 @@ const MBBS_STRUCTURE = {
   },
 };
 
+// ---------- Past Papers — named year/block subfolders per program ----------
+// Each folder name is matched directly against a question's `source` field, so
+// tagging an MCQ with Source = "KMU MDCAT 2023" automatically files it into that
+// folder. Admin's Source field on the question form/bulk-upload suggests these
+// names so they stay consistent. BSN folders will be added once provided.
+const PAST_PAPER_FOLDERS = {
+  MDCAT: ["KMU MDCAT 2023", "KMU MDCAT 2024", "KMU MDCAT 2025"],
+  KMUCAT: ["KMU CAT 2023", "KMU CAT 2024", "KMU CAT 2025"],
+  MBBS: [
+    "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
+    "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
+    "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024",
+  ],
+  BSN: [], // to be provided later
+};
+
 // ---------- FLP (Full Length Paper) — auto-generated exam blueprints ----------
 // For each program: total question count, total time (in seconds), and how many
 // questions come from each subject. MBBS and BSN are left unconfigured for now
@@ -2191,6 +2207,7 @@ function Home({
   socialLinks, onUpdateSocialLink,
   onAddNote,
   examDates,
+  onOpenPastPapers,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -2285,7 +2302,7 @@ function Home({
                 <button
                   key={p.key}
                   disabled={n === 0}
-                  onClick={() => onOpenProgram(p.key)}
+                  onClick={() => onOpenPastPapers(p.key)}
                   className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
@@ -3024,6 +3041,135 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Past Papers: named year/block folders per program ----------
+function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onHome }) {
+  const folders = PAST_PAPER_FOLDERS[program] || [];
+  const counts = useMemo(() => {
+    const c = {};
+    folders.forEach((f) => {
+      c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+    });
+    return c;
+  }, [bank, program, folders]);
+
+  const progInfo = PROGRAMS.find((p) => p.key === program);
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <BackHomeBar onBack={onBack} backLabel="Back to Past Papers" onHome={onHome} />
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {progInfo ? progInfo.label : program} — Past Papers
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {folders.length} folder{folders.length === 1 ? "" : "s"} available
+        </p>
+
+        {folders.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No past paper folders have been set up for this program yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {folders.map((f) => {
+              const n = counts[f] || 0;
+              return (
+                <button
+                  key={f}
+                  disabled={n === 0}
+                  onClick={() => onOpenFolder(f)}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, background: colorForName(f), borderRadius: "50%" }}
+                  >
+                    <FileText size={20} style={{ color: "#fff" }} />
+                  </div>
+                  <div>
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
+                      {f}
+                    </span>
+                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                      {n} question{n === 1 ? "" : "s"} available
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Quiz setup for a single past-paper folder — no subject/topic step, since a real
+// past paper already mixes subjects the way the actual exam does.
+function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
+  const folderQuestions = bank.filter((q) => q.program === program && q.source === folder);
+  const [count, setCount] = useState(10);
+  const [timed, setTimed] = useState(false);
+  const maxCount = folderQuestions.length;
+  const chosenCount = Math.min(count, Math.max(1, maxCount));
+  const SECONDS_PER_Q = 60;
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <BackHomeBar onBack={onBack} backLabel="Back to folders" onHome={onHome} />
+        <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+          {program} · Past Paper
+        </div>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {folder}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {folderQuestions.length} question{folderQuestions.length === 1 ? "" : "s"} available
+        </p>
+
+        <div className="mb-8">
+          <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+            Number of questions (max {maxCount})
+          </label>
+          <input
+            type="range"
+            min={1}
+            max={Math.max(1, maxCount)}
+            value={chosenCount}
+            onChange={(e) => setCount(Number(e.target.value))}
+            className="w-full"
+          />
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-lg mt-1">
+            {chosenCount} questions
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
+            <input type="checkbox" checked={timed} onChange={(e) => setTimed(e.target.checked)} />
+            <span>
+              Timed Mock Exam ({SECONDS_PER_Q}s per question — {Math.round((chosenCount * SECONDS_PER_Q) / 60)} min total)
+            </span>
+          </label>
+        </div>
+
+        <button
+          disabled={maxCount === 0}
+          onClick={() => onStart(folderQuestions.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
+          className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
+          style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+        >
+          {timed ? "Begin timed exam →" : "Begin practice →"}
+        </button>
       </div>
     </div>
   );
@@ -4340,7 +4486,21 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source</label>
-                <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Practice or Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
+                <input
+                  value={form.source}
+                  onChange={(e) => setForm({ ...form, source: e.target.value })}
+                  placeholder="Practice or Past Paper 2024"
+                  list="source-suggestions"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
+                />
+                <datalist id="source-suggestions">
+                  <option value="Practice" />
+                  {(PAST_PAPER_FOLDERS[form.program] || []).map((f) => <option key={f} value={f} />)}
+                </datalist>
+                <p className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                  Use an exact Past Papers folder name (see suggestions) to file this question into that folder.
+                </p>
               </div>
             </div>
 
@@ -4497,7 +4657,20 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               </div>
               <div>
                 <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Source label</label>
-                <input value={bulkForm.source} onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })} placeholder="e.g. Past Paper 2024" className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
+                <input
+                  value={bulkForm.source}
+                  onChange={(e) => setBulkForm({ ...bulkForm, source: e.target.value })}
+                  placeholder="e.g. Past Paper 2024"
+                  list="bulk-source-suggestions"
+                  className="w-full px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.card }}
+                />
+                <datalist id="bulk-source-suggestions">
+                  {(PAST_PAPER_FOLDERS[bulkForm.program] || []).map((f) => <option key={f} value={f} />)}
+                </datalist>
+                <p className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                  Use an exact Past Papers folder name (see suggestions) to file these into that folder.
+                </p>
               </div>
             </div>
 
@@ -5055,6 +5228,7 @@ export default function App() {
   const [block, setBlock] = useState(null);
   const [topic, setTopic] = useState(null);
   const [subject, setSubject] = useState(null);
+  const [pastPaperFolder, setPastPaperFolder] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
   const [quizMeta, setQuizMeta] = useState({ label: "", timeLimit: null, mode: "normal" });
@@ -5193,6 +5367,19 @@ export default function App() {
   const startQuiz = (qs, opts = {}) => {
     setQuizQuestions(qs);
     setQuizMeta({ label: subject, timeLimit: opts.timeLimit || null, mode: "normal" });
+    setView("quiz");
+  };
+
+  const openPastPapers = (p) => {
+    if (userCourse && p !== userCourse) return;
+    setProgram(p);
+    setPastPaperFolder(null);
+    setView("pastpaper-folders");
+  };
+  const openPastPaperFolder = (f) => { setPastPaperFolder(f); setView("pastpaper-setup"); };
+  const startPastPaperQuiz = (qs, opts = {}) => {
+    setQuizQuestions(qs);
+    setQuizMeta({ label: pastPaperFolder, timeLimit: opts.timeLimit || null, mode: "pastpaper" });
     setView("quiz");
   };
 
@@ -5494,6 +5681,7 @@ export default function App() {
         onUpdateSocialLink={updateSocialLink}
         onAddNote={quickAddNote}
         examDates={examDates}
+        onOpenPastPapers={openPastPapers}
       />
     );
   }
@@ -5585,6 +5773,29 @@ export default function App() {
       />
     );
   }
+  if (view === "pastpaper-folders") {
+    return (
+      <PastPaperFoldersPage
+        program={program}
+        bank={bank}
+        onBack={() => setView("home")}
+        onOpenFolder={openPastPaperFolder}
+        onHome={() => setView("home")}
+      />
+    );
+  }
+  if (view === "pastpaper-setup") {
+    return (
+      <PastPaperSetup
+        program={program}
+        folder={pastPaperFolder}
+        bank={bank}
+        onBack={() => setView("pastpaper-folders")}
+        onStart={startPastPaperQuiz}
+        onHome={() => setView("home")}
+      />
+    );
+  }
   if (view === "quiz") {
     return (
       <Quiz
@@ -5594,7 +5805,7 @@ export default function App() {
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
         onFinish={finishQuiz}
-        onExit={() => setView(quizMeta.mode === "normal" ? "subject" : "home")}
+        onExit={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
         onHome={() => setView("home")}
       />
     );
@@ -5606,7 +5817,7 @@ export default function App() {
         subject={quizMeta.mode === "normal" ? subject : quizMeta.label}
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
-        onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : "home")}
+        onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
         onHome={() => setView("home")}
       />
     );
