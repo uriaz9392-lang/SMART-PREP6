@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import {
   Dna, FlaskConical, Atom, BookOpen, Lock, Unlock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, Check, X, RotateCcw, Search, Settings,
-  ClipboardList, GraduationCap, ShieldCheck, ArrowLeft, Save, LogOut,
+  ClipboardList, GraduationCap, ShieldCheck, ArrowLeft, Save, LogOut, ChevronRight,
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
@@ -803,11 +803,96 @@ const MDCAT_TOPICS = {
 
 const MBBS_STRUCTURE = {
   "2nd Year": {
-    "Block D": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
-    "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
-    "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology"],
+    "Block D": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
+    "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
+    "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
   },
 };
+
+// ---------- MBBS nested topic / sub-topic tree (per Block → Subject) ----------
+// Each subject maps to an array of "items". An item is either:
+//   - a plain string  → a leaf topic. Selecting it goes straight to quiz setup,
+//     matched against a question's `topic` field (same convention as MDCAT_TOPICS).
+//   - { name, children: [...] } → a folder. Selecting it drills one level deeper,
+//     showing its own children (which can themselves be leaves or folders).
+// Any Block/Subject combination NOT listed here (e.g. Histology, Embryology,
+// MINORS, or Anatomy/Biochemistry in Block F) has no topic browsing defined yet —
+// tapping that subject goes straight to quiz setup, exactly like before.
+const MBBS_TOPICS = {
+  "Block D": {
+    Anatomy: [
+      {
+        name: "Neuro Anatomy",
+        children: [
+          "Introduction of CNS and Neurons",
+          "Nerve fibers and peripheral innervation",
+          "Spinal cord",
+          "Brain stem",
+          "Cerebellum",
+          "Cerebrum",
+          "Cerebral cortex",
+          "Reticular formation and limbic system",
+          "Basal ganglia",
+          "Cranial nerves nuclei",
+          "Thalamus and hypothalamus",
+          "Autonomic nervous system",
+          "Meninges",
+          "Ventricular system and CSF",
+          "Development of CNS and blood supply to CNS",
+        ],
+      },
+      {
+        name: "Head and Neck",
+        children: [
+          "Gross anatomy of Head and Neck",
+          "Gross anatomy of Brain",
+          "Special Senses",
+          "Cranial nerves",
+        ],
+      },
+    ],
+    Physiology: ["CNS and sensory physiology", "Motor physiology", "Special senses"],
+  },
+  "Block E": {
+    Anatomy: ["Abdomen Anatomy"],
+    Physiology: ["GIT Physiology", "Renal Physiology"],
+    Biochemistry: [
+      {
+        name: "GIT Module",
+        children: ["Carbohydrates Metabolism", "Protein Metabolism", "Lipid metabolism"],
+      },
+      "Renal Module",
+    ],
+  },
+  "Block F": {
+    Physiology: ["Endocrine System", "Reproductive system"],
+  },
+};
+
+// Every leaf topic name nested under a given item (recursively) — used to tally
+// question counts for a folder by summing across all of its descendants.
+function mbbsLeafNames(item) {
+  if (typeof item === "string") return [item];
+  return (item.children || []).flatMap(mbbsLeafNames);
+}
+
+// Every leaf topic name for an entire Block/Subject — used by the admin forms so
+// a Topic dropdown can be offered wherever a tree is defined for that subject.
+function mbbsAllLeaves(block, subject) {
+  const tree = (MBBS_TOPICS[block] && MBBS_TOPICS[block][subject]) || [];
+  return tree.flatMap(mbbsLeafNames);
+}
+
+// Walks a folder path (array of folder names chosen so far) down the tree for a
+// given Block/Subject, returning the array of items to show at that depth.
+function mbbsWalk(block, subject, path) {
+  let node = (MBBS_TOPICS[block] && MBBS_TOPICS[block][subject]) || [];
+  for (const name of path) {
+    const found = node.find((it) => typeof it !== "string" && it.name === name);
+    node = found ? found.children || [] : [];
+  }
+  return node;
+}
 
 // ---------- Past Papers — named year/block subfolders per program ----------
 // Each folder entry is either:
@@ -3074,6 +3159,79 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
   );
 }
 
+// ---------- MBBS Topic/Subtopic browser (arbitrary depth, per Block → Subject) ----------
+// Renders whatever level of the MBBS_TOPICS tree `items` represents. Folder items
+// drill deeper (handled by the caller pushing onto the path); leaf items go
+// straight to quiz setup.
+function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBack, onOpenItem, onHome }) {
+  const scoped = bank.filter(
+    (q) =>
+      q.program === program &&
+      (year ? (q.year || "") === year : true) &&
+      (block ? (q.block || "") === block : true) &&
+      q.subject === subject
+  );
+  const rows = items.map((item) => {
+    const isFolder = typeof item !== "string";
+    const name = isFolder ? item.name : item;
+    const leaves = mbbsLeafNames(item);
+    const count = scoped.filter((q) => leaves.includes(q.topic)).length;
+    return { item, name, isFolder, count };
+  });
+  const crumb = [subject, ...path].join(" › ");
+  const title = path.length ? path[path.length - 1] : subject;
+  const totalQ = rows.reduce((sum, r) => sum + r.count, 0);
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <BackHomeBar onBack={onBack} backLabel="Back" onHome={onHome} />
+        <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+          {crumb}
+        </div>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {title}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {totalQ} question{totalQ === 1 ? "" : "s"} across {rows.length} item{rows.length === 1 ? "" : "s"}
+        </p>
+
+        {rows.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            Nothing here yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {rows.map((r) => (
+              <button
+                key={r.name}
+                onClick={() => onOpenItem(r.item)}
+                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
+                style={{ background: T.card, border: `1px solid ${T.line}` }}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 36, height: 36, background: colorForName(r.name), borderRadius: "50%" }}
+                  >
+                    {r.isFolder ? <Library size={16} style={{ color: "#fff" }} /> : <ClipboardList size={16} style={{ color: "#fff" }} />}
+                  </div>
+                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</span>
+                </div>
+                <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                  <span>{r.count} q</span>
+                  {r.isFolder && <ChevronRight size={14} />}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Past Papers: named year/block folders per program ----------
 function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome }) {
   const folders = PAST_PAPER_FOLDERS[program] || [];
@@ -4343,7 +4501,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         year: bulkForm.program === "MBBS" ? bulkForm.year : "",
         block: bulkForm.program === "MBBS" ? bulkForm.block : "",
         subject: bulkForm.subject,
-        topic: bulkForm.subject === PAST_PAPERS_SUBJECT ? bulkForm.source : (TOPIC_PROGRAMS.includes(bulkForm.program) ? bulkForm.topic : ""),
+        topic: bulkForm.subject === PAST_PAPERS_SUBJECT ? bulkForm.source : ((TOPIC_PROGRAMS.includes(bulkForm.program) || bulkForm.program === "MBBS") ? bulkForm.topic : ""),
         source: bulkForm.source,
         question: m.question,
         options: m.options,
@@ -4650,12 +4808,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             )}
 
             {form.program === "MBBS" && (
-              <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
                   <select
                     value={form.year}
-                    onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "" })}
+                    onChange={(e) => setForm({ ...form, year: e.target.value, block: "", subject: "", topic: "" })}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
@@ -4667,7 +4825,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
                   <select
                     value={form.block}
-                    onChange={(e) => setForm({ ...form, block: e.target.value, subject: "" })}
+                    onChange={(e) => setForm({ ...form, block: e.target.value, subject: "", topic: "" })}
                     disabled={!form.year}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
@@ -4680,7 +4838,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
                   <select
                     value={form.subject}
-                    onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value, topic: "" })}
                     disabled={!form.block}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
@@ -4688,6 +4846,30 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  {mbbsAllLeaves(form.block, form.subject).length > 0 ? (
+                    <select
+                      value={form.topic}
+                      onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                      disabled={!form.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    >
+                      <option value="">{form.subject ? "Select topic…" : "Choose subject first"}</option>
+                      {mbbsAllLeaves(form.block, form.subject).map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      value={form.topic}
+                      onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                      placeholder={form.subject ? "Optional topic" : "Choose subject first"}
+                      disabled={!form.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    />
+                  )}
                 </div>
               </div>
             )}
@@ -4825,12 +5007,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             )}
 
             {bulkForm.program === "MBBS" && (
-              <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Year</label>
                   <select
                     value={bulkForm.year}
-                    onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "" })}
+                    onChange={(e) => setBulkForm({ ...bulkForm, year: e.target.value, block: "", subject: "", topic: "" })}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
@@ -4842,7 +5024,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Block</label>
                   <select
                     value={bulkForm.block}
-                    onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "" })}
+                    onChange={(e) => setBulkForm({ ...bulkForm, block: e.target.value, subject: "", topic: "" })}
                     disabled={!bulkForm.year}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
@@ -4855,7 +5037,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Subject</label>
                   <select
                     value={bulkForm.subject}
-                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value })}
+                    onChange={(e) => setBulkForm({ ...bulkForm, subject: e.target.value, topic: "" })}
                     disabled={!bulkForm.block}
                     className="w-full px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
@@ -4863,6 +5045,30 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
                     {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
+                </div>
+                <div>
+                  <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
+                  {mbbsAllLeaves(bulkForm.block, bulkForm.subject).length > 0 ? (
+                    <select
+                      value={bulkForm.topic}
+                      onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
+                      disabled={!bulkForm.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    >
+                      <option value="">{bulkForm.subject ? "Select topic…" : "Choose subject first"}</option>
+                      {mbbsAllLeaves(bulkForm.block, bulkForm.subject).map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      value={bulkForm.topic}
+                      onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
+                      placeholder={bulkForm.subject ? "Optional topic" : "Choose subject first"}
+                      disabled={!bulkForm.subject}
+                      className="w-full px-3 py-2"
+                      style={{ border: `1px solid ${T.line}`, background: T.card }}
+                    />
+                  )}
                 </div>
               </div>
             )}
@@ -5342,6 +5548,7 @@ export default function App() {
   const [block, setBlock] = useState(null);
   const [topic, setTopic] = useState(null);
   const [subject, setSubject] = useState(null);
+  const [mbbsPath, setMbbsPath] = useState([]);
   const [pastPaperFolder, setPastPaperFolder] = useState(null);
   const [pastPaperParent, setPastPaperParent] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
@@ -5469,12 +5676,23 @@ export default function App() {
 
   const openProgram = (p) => {
     if (userCourse && p !== userCourse) return; // defensive: students can't jump into another course
-    setProgram(p); setYear(null); setBlock(null); setTopic(null); setView("program");
+    setProgram(p); setYear(null); setBlock(null); setTopic(null); setMbbsPath([]); setView("program");
   };
   const openYear = (y) => { setYear(y); setBlock(null); setView("year"); };
-  const openBlock = (b) => { setBlock(b); setView("block"); };
+  const openBlock = (b) => { setBlock(b); setMbbsPath([]); setView("block"); };
   const openSubject = (s) => {
     setSubject(s);
+    if (program === "MBBS") {
+      const tree = mbbsWalk(block, s, []);
+      setTopic(null);
+      if (tree.length > 0) {
+        setMbbsPath([]);
+        setView("mbbs-topic");
+      } else {
+        setView("subject");
+      }
+      return;
+    }
     const hasTopics = TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[s] || []).length > 0;
     if (hasTopics) {
       setTopic(null);
@@ -5485,6 +5703,23 @@ export default function App() {
     }
   };
   const openTopic = (t) => { setTopic(t); setView("subject"); };
+  // MBBS folder/subtopic browser: leaf item → go start the quiz setup; folder
+  // item → drill one level deeper, staying on the mbbs-topic view.
+  const openMbbsItem = (item) => {
+    if (typeof item === "string") {
+      setTopic(item);
+      setView("subject");
+    } else {
+      setMbbsPath((p) => [...p, item.name]);
+    }
+  };
+  const backMbbsTopic = () => {
+    if (mbbsPath.length > 0) {
+      setMbbsPath((p) => p.slice(0, -1));
+    } else {
+      setView("block");
+    }
+  };
   const startQuiz = (qs, opts = {}) => {
     setQuizQuestions(qs);
     setQuizMeta({ label: subject, timeLimit: opts.timeLimit || null, mode: "normal" });
@@ -5880,17 +6115,34 @@ export default function App() {
       />
     );
   }
+  if (view === "mbbs-topic") {
+    return (
+      <MbbsTopicPage
+        program={program}
+        year={year}
+        block={block}
+        subject={subject}
+        path={mbbsPath}
+        items={mbbsWalk(block, subject, mbbsPath)}
+        bank={bank}
+        onBack={backMbbsTopic}
+        onOpenItem={openMbbsItem}
+        onHome={() => setView("home")}
+      />
+    );
+  }
   if (view === "subject") {
     const subjectHasTopics = TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[subject] || []).length > 0;
+    const mbbsTreeActive = program === "MBBS" && mbbsWalk(block, subject, []).length > 0;
     return (
       <SubjectSetup
         program={program}
         year={program === "MBBS" ? year : null}
         block={program === "MBBS" ? block : null}
-        topic={subjectHasTopics ? topic : null}
+        topic={(subjectHasTopics || mbbsTreeActive) ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView(program === "MBBS" ? "block" : subjectHasTopics ? "topic" : "program")}
+        onBack={() => setView(program === "MBBS" ? (mbbsTreeActive ? "mbbs-topic" : "block") : subjectHasTopics ? "topic" : "program")}
         onStart={startQuiz}
         onHome={() => setView("home")}
       />
