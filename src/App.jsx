@@ -810,13 +810,25 @@ const MBBS_STRUCTURE = {
 };
 
 // ---------- Past Papers — named year/block subfolders per program ----------
-// Each folder name is matched directly against a question's `source` field, so
-// tagging an MCQ with Source = "KMU MDCAT 2023" automatically files it into that
-// folder. Admin's Source field on the question form/bulk-upload suggests these
-// names so they stay consistent. BSN folders will be added once provided.
+// Each folder entry is either:
+//   - a plain string  → a leaf folder, matched directly against a question's
+//     `source` field (e.g. "KMU MDCAT 2023")
+//   - { name, subfolders: [...] } → a folder that contains further named test
+//     folders (e.g. "KMU CAT 2025" containing "KMU CAT 2025 First Test" etc.);
+//     each subfolder name is itself matched against `source`, same as a leaf.
+// Admin's Source field on the question form/bulk-upload suggests every leaf name
+// (including subfolder names) so tagging stays consistent. BSN folders will be
+// added once provided.
 const PAST_PAPER_FOLDERS = {
   MDCAT: ["KMU MDCAT 2023", "KMU MDCAT 2024", "KMU MDCAT 2025"],
-  KMUCAT: ["KMU CAT 2023", "KMU CAT 2024", "KMU CAT 2025"],
+  KMUCAT: [
+    "KMU CAT 2021",
+    "KMU CAT 2022",
+    { name: "KMU CAT 2023", subfolders: ["KMU CAT 2023 First Test", "KMU CAT 2023 2nd Test", "KMU CAT 2023 3rd Test"] },
+    { name: "KMU CAT 2024", subfolders: ["KMU CAT 2024 First Test", "KMU CAT 2024 2nd Test"] },
+    { name: "KMU CAT 2025", subfolders: ["KMU CAT 2025 First Test", "KMU CAT 2025 2nd Test", "KMU CAT 2025 3rd Test"] },
+    { name: "KMU CAT 2026", subfolders: ["KMU CAT 2026 First Test", "KMU CAT 2026 2nd Test", "KMU CAT 2026 3rd Test"] },
+  ],
   MBBS: [
     "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
     "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
@@ -824,6 +836,15 @@ const PAST_PAPER_FOLDERS = {
   ],
   BSN: [], // to be provided later
 };
+
+// Every leaf folder name across a program (subfolder names included, parent names
+// of nested folders excluded since those aren't directly taggable) — used for the
+// admin Source-field suggestions.
+function pastPaperLeafNames(program) {
+  return (PAST_PAPER_FOLDERS[program] || []).flatMap((f) =>
+    typeof f === "string" ? [f] : f.subfolders || []
+  );
+}
 
 // ---------- FLP (Full Length Paper) — auto-generated exam blueprints ----------
 // For each program: total question count, total time (in seconds), and how many
@@ -3054,12 +3075,18 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
 }
 
 // ---------- Past Papers: named year/block folders per program ----------
-function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onHome }) {
+function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome }) {
   const folders = PAST_PAPER_FOLDERS[program] || [];
   const counts = useMemo(() => {
     const c = {};
     folders.forEach((f) => {
-      c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+      if (typeof f === "string") {
+        c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+      } else {
+        // Parent folder: count everything filed directly under it OR under any of its subfolders.
+        const names = [f.name, ...(f.subfolders || [])];
+        c[f.name] = bank.filter((q) => q.program === program && names.includes(q.source)).length;
+      }
     });
     return c;
   }, [bank, program, folders]);
@@ -3085,6 +3112,75 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onHome }) {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {folders.map((f) => {
+              const isNested = typeof f !== "string";
+              const name = isNested ? f.name : f;
+              const n = counts[name] || 0;
+              return (
+                <button
+                  key={name}
+                  disabled={n === 0}
+                  onClick={() => (isNested ? onOpenSubfolders(f) : onOpenFolder(name))}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0"
+                    style={{ width: 48, height: 48, background: colorForName(name), borderRadius: "50%" }}
+                  >
+                    {isNested ? <Library size={20} style={{ color: "#fff" }} /> : <FileText size={20} style={{ color: "#fff" }} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
+                        {name}
+                      </span>
+                      {isNested && <ChevronRight size={16} style={{ color: T.inkSoft }} />}
+                    </div>
+                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
+                      {n} question{n === 1 ? "" : "s"} {isNested ? `across ${(f.subfolders || []).length} test${(f.subfolders || []).length === 1 ? "" : "s"}` : "available"}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Lists the test-level subfolders inside a single past-paper year (e.g. all the
+// individual tests inside "KMU CAT 2025").
+function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, onHome }) {
+  const subfolders = parent?.subfolders || [];
+  const counts = useMemo(() => {
+    const c = {};
+    subfolders.forEach((f) => {
+      c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+    });
+    return c;
+  }, [bank, program, subfolders]);
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <BackHomeBar onBack={onBack} backLabel="Back to folders" onHome={onHome} />
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
+          {parent?.name}
+        </h1>
+        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
+          {subfolders.length} test{subfolders.length === 1 ? "" : "s"} available
+        </p>
+
+        {subfolders.length === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No tests have been added under this year yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {subfolders.map((f) => {
               const n = counts[f] || 0;
               return (
                 <button
@@ -4504,7 +4600,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 />
                 <datalist id="source-suggestions">
                   <option value="Practice" />
-                  {(PAST_PAPER_FOLDERS[form.program] || []).map((f) => <option key={f} value={f} />)}
+                  {pastPaperLeafNames(form.program).map((f) => <option key={f} value={f} />)}
                 </datalist>
                 <p className="text-xs mt-1" style={{ color: T.inkSoft }}>
                   Use an exact Past Papers folder name (see suggestions) to file this question into that folder.
@@ -4679,7 +4775,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   style={{ border: `1px solid ${T.line}`, background: T.card }}
                 />
                 <datalist id="bulk-source-suggestions">
-                  {(PAST_PAPER_FOLDERS[bulkForm.program] || []).map((f) => <option key={f} value={f} />)}
+                  {pastPaperLeafNames(bulkForm.program).map((f) => <option key={f} value={f} />)}
                 </datalist>
                 <p className="text-xs mt-1" style={{ color: T.inkSoft }}>
                   Use an exact Past Papers folder name (see suggestions) to file these into that folder.
@@ -5247,6 +5343,7 @@ export default function App() {
   const [topic, setTopic] = useState(null);
   const [subject, setSubject] = useState(null);
   const [pastPaperFolder, setPastPaperFolder] = useState(null);
+  const [pastPaperParent, setPastPaperParent] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
   const [quizMeta, setQuizMeta] = useState({ label: "", timeLimit: null, mode: "normal" });
@@ -5310,6 +5407,12 @@ export default function App() {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
         setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
+        // Keep the leaderboard's `name` column in sync immediately on login (not just
+        // after the next quiz), so students who already have stats but signed up
+        // before "name" existed still show up once they log back in.
+        if (displayName && (!st || st.name !== displayName)) {
+          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName });
+        }
       } else {
         setStats(emptyStats);
       }
@@ -5392,8 +5495,10 @@ export default function App() {
     if (userCourse && p !== userCourse) return;
     setProgram(p);
     setPastPaperFolder(null);
+    setPastPaperParent(null);
     setView("pastpaper-folders");
   };
+  const openPastPaperSubfolders = (parentFolder) => { setPastPaperParent(parentFolder); setView("pastpaper-subfolders"); };
   const openPastPaperFolder = (f) => { setPastPaperFolder(f); setView("pastpaper-setup"); };
   const startPastPaperQuiz = (qs, opts = {}) => {
     setQuizQuestions(qs);
@@ -5798,6 +5903,19 @@ export default function App() {
         bank={bank}
         onBack={() => setView("home")}
         onOpenFolder={openPastPaperFolder}
+        onOpenSubfolders={openPastPaperSubfolders}
+        onHome={() => setView("home")}
+      />
+    );
+  }
+  if (view === "pastpaper-subfolders") {
+    return (
+      <PastPaperSubfoldersPage
+        program={program}
+        parent={pastPaperParent}
+        bank={bank}
+        onBack={() => setView("pastpaper-folders")}
+        onOpenFolder={openPastPaperFolder}
         onHome={() => setView("home")}
       />
     );
@@ -5808,7 +5926,7 @@ export default function App() {
         program={program}
         folder={pastPaperFolder}
         bank={bank}
-        onBack={() => setView("pastpaper-folders")}
+        onBack={() => setView(pastPaperParent ? "pastpaper-subfolders" : "pastpaper-folders")}
         onStart={startPastPaperQuiz}
         onHome={() => setView("home")}
       />
