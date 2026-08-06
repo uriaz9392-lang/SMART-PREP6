@@ -257,7 +257,122 @@ export async function saveReviews(reviews) {
   }
 }
 
-// ---- Syllabus items (admin-authored: links, PDFs, or text blocks) ----
+// ---- Explanation feedback (👍/👎 per question, shared, admin can review) ----
+// Requires an `explanation_feedback` jsonb column on `app_data` (default value {}).
+// Shape: { [questionId]: { up: number, down: number } }
+export async function loadExplanationFeedback() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("explanation_feedback").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.explanation_feedback) || {};
+  } catch (e) {
+    console.error("Load explanation feedback failed (add an 'explanation_feedback' jsonb column to app_data):", e);
+    return {};
+  }
+}
+export async function saveExplanationFeedback(feedback) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ explanation_feedback: feedback }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, explanation_feedback: feedback });
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (e) {
+    console.error("Save explanation feedback failed (add an 'explanation_feedback' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
+// ---- Question reports (students flag a wrong/confusing MCQ, admin reviews) ----
+// Requires a `question_reports` jsonb column on `app_data` (default value []).
+export async function loadQuestionReports() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("question_reports").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.question_reports) || [];
+  } catch (e) {
+    console.error("Load question reports failed (add a 'question_reports' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveQuestionReports(reports) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ question_reports: reports }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, question_reports: reports });
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (e) {
+    console.error("Save question reports failed (add a 'question_reports' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
+// ---- Discussion threads (per topic, students can post doubts/comments) ----
+// Requires a `discussions` jsonb column on `app_data` (default value {}).
+// Shape: { [topicKey]: [{ id, name, text, createdAt }] }
+export async function loadDiscussions() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("discussions").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.discussions) || {};
+  } catch (e) {
+    console.error("Load discussions failed (add a 'discussions' jsonb column to app_data):", e);
+    return {};
+  }
+}
+export async function saveDiscussions(discussions) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ discussions }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, discussions });
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (e) {
+    console.error("Save discussions failed (add a 'discussions' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
+// ---- Rank / percentile (reads the leaderboard table's counts, not full rows) ----
+export async function loadRankInfo(myTotalCorrect) {
+  try {
+    const { count: totalCount, error: e1 } = await supabase
+      .from("user_stats")
+      .select("user_id", { count: "exact", head: true });
+    if (e1) throw e1;
+    const { count: aheadCount, error: e2 } = await supabase
+      .from("user_stats")
+      .select("user_id", { count: "exact", head: true })
+      .gt("total_correct", myTotalCorrect || 0);
+    if (e2) throw e2;
+    return { totalCount: totalCount || 0, rank: (aheadCount || 0) + 1 };
+  } catch (e) {
+    console.error("Load rank info failed:", e);
+    return null;
+  }
+}
+
+// ---- Admin analytics: aggregate every student's by_subject stats ----
+// Reuses the same RLS read-policy as the leaderboard (see loadLeaderboard).
+export async function loadAllStudentSubjectStats() {
+  try {
+    const { data, error } = await supabase.from("user_stats").select("by_subject");
+    if (error) throw error;
+    return (data || []).map((r) => r.by_subject || {});
+  } catch (e) {
+    console.error("Load admin analytics failed (same RLS read-policy as the leaderboard is required):", e);
+    return [];
+  }
+}
+
+
 // Requires a `syllabus` jsonb column on the `app_data` table (default value []).
 export async function loadSyllabusItems() {
   try {
@@ -2309,6 +2424,44 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
 }
 
 // ---------- Home: dashboard ----------
+// ---------- Browser notification permission (reminder toggle in Settings) ----------
+// Note: this only fires a notification while the app tab is open in a browser that
+// supports the Notification API — it isn't a true server-sent push notification
+// that can wake up a closed app, since that needs a push server + service worker.
+function NotificationPermissionRow() {
+  const supported = typeof window !== "undefined" && "Notification" in window;
+  const [permission, setPermission] = useState(supported ? Notification.permission : "unsupported");
+
+  const enable = async () => {
+    if (!supported) return;
+    const result = await Notification.requestPermission();
+    setPermission(result);
+    if (result === "granted") {
+      new Notification("Reminders enabled", { body: "We'll nudge you here when the Daily Challenge is waiting." });
+    }
+  };
+
+  if (!supported) return null;
+
+  return (
+    <div className="p-5 mb-4 flex items-center justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+      <div>
+        <div className="text-sm flex items-center gap-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
+          <BellRing size={14} /> Reminder notifications
+        </div>
+        <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+          {permission === "granted" ? "Enabled — works while the app is open." : "Get a nudge for the Daily Challenge while the app is open."}
+        </div>
+      </div>
+      {permission !== "granted" && (
+        <button onClick={enable} className="text-xs px-3 py-1.5 shrink-0" style={{ background: T.ink, color: T.paper }}>
+          Enable
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
@@ -2365,6 +2518,17 @@ function Home({
   const attempted = stats?.totalAttempted || 0;
   const accuracy = attempted > 0 ? Math.round((stats.totalCorrect / attempted) * 100) : 0;
 
+  // Daily Challenge reminder banner — dismissible for the rest of the day.
+  const todayLocal = new Date().toISOString().slice(0, 10);
+  const [reminderDismissed, setReminderDismissed] = useState(() => {
+    try { return localStorage.getItem("mdcat-reminder-dismissed") === todayLocal; } catch { return false; }
+  });
+  const showDailyReminder = stats?.lastChallengeDate !== todayLocal && !reminderDismissed;
+  const dismissDailyReminder = () => {
+    setReminderDismissed(true);
+    try { localStorage.setItem("mdcat-reminder-dismissed", todayLocal); } catch {}
+  };
+
   // Topper shown right on the Quick Access card, no need to open the leaderboard.
   const [topLeader, setTopLeader] = useState(null);
   useEffect(() => {
@@ -2375,6 +2539,51 @@ function Home({
   }, []);
   const topLeaderAccuracy =
     topLeader && topLeader.total_attempted > 0 ? Math.round((topLeader.total_correct / topLeader.total_attempted) * 100) : 0;
+
+  // Rank comparison — only fetched once the student opens "Your Progress" (no need
+  // to hit the DB on every Home load).
+  const [rankInfo, setRankInfo] = useState(null);
+  useEffect(() => {
+    if (navTab !== "progress") return;
+    (async () => {
+      const info = await loadRankInfo(stats?.totalCorrect || 0);
+      setRankInfo(info);
+    })();
+  }, [navTab, stats?.totalCorrect]);
+
+  // Weak Topics Dashboard — every subject/topic/block the student has attempted at
+  // least 3 questions in, sorted by lowest accuracy first.
+  const weakTopics = useMemo(() => {
+    const entries = Object.entries(stats?.bySubject || {});
+    return entries
+      .map(([key, v]) => ({
+        key,
+        attempted: v.attempted || 0,
+        correct: v.correct || 0,
+        accuracy: v.attempted > 0 ? Math.round((v.correct / v.attempted) * 100) : 0,
+      }))
+      .filter((e) => e.attempted >= 3)
+      .sort((a, b) => a.accuracy - b.accuracy)
+      .slice(0, 6);
+  }, [stats?.bySubject]);
+
+  // Badges & Streak rewards — simple thresholds computed from stats already on hand.
+  const badges = useMemo(() => {
+    const list = [];
+    const streak = stats?.streak || 0;
+    const correct = stats?.totalCorrect || 0;
+    const attempted = stats?.totalAttempted || 0;
+    if (streak >= 3) list.push({ label: "3-Day Streak", icon: "🔥", earned: true });
+    if (streak >= 7) list.push({ label: "7-Day Streak", icon: "🔥", earned: true });
+    if (streak >= 30) list.push({ label: "30-Day Streak", icon: "🔥", earned: true });
+    if (correct >= 50) list.push({ label: "50 Correct", icon: "⭐", earned: true });
+    if (correct >= 100) list.push({ label: "100 Correct", icon: "🌟", earned: true });
+    if (correct >= 500) list.push({ label: "500 Correct", icon: "🏆", earned: true });
+    if (attempted >= 100) list.push({ label: "Century Club", icon: "🎯", earned: true });
+    if (attempted >= 500) list.push({ label: "500 Attempted", icon: "🎯", earned: true });
+    if (attempted > 0 && correct / attempted >= 0.8) list.push({ label: "80%+ Accuracy", icon: "🧠", earned: true });
+    return list;
+  }, [stats?.streak, stats?.totalCorrect, stats?.totalAttempted]);
 
   const greeting = useMemo(() => {
     const h = new Date().getHours();
@@ -2515,6 +2724,62 @@ function Home({
               unit="%"
             />
           </div>
+
+          {rankInfo && (
+            <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="text-sm mb-1 flex items-center gap-2" style={{ color: T.inkSoft }}>
+                <Trophy size={14} /> Your rank
+              </div>
+              <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>
+                #{rankInfo.rank} <span className="text-sm" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>of {rankInfo.totalCount}</span>
+              </div>
+              {rankInfo.totalCount > 0 && (
+                <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                  Top {Math.max(1, Math.round((rankInfo.rank / rankInfo.totalCount) * 100))}% of all students
+                </div>
+              )}
+            </div>
+          )}
+
+          {badges.length > 0 && (
+            <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="text-sm mb-3 flex items-center gap-2" style={{ color: T.inkSoft }}>
+                <Award size={14} /> Badges earned
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {badges.map((b) => (
+                  <span
+                    key={b.label}
+                    className="px-3 py-1.5 text-xs flex items-center gap-1"
+                    style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 6 }}
+                  >
+                    <span>{b.icon}</span> {b.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {weakTopics.length > 0 && (
+            <div className="p-5 mb-6" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <div className="text-sm mb-3 flex items-center gap-2" style={{ color: T.inkSoft }}>
+                <Target size={14} /> Weak topics — focus here
+              </div>
+              <div className="space-y-2">
+                {weakTopics.map((w) => (
+                  <div key={w.key} className="flex items-center justify-between text-sm">
+                    <span className="truncate pr-2">{w.key}</span>
+                    <span
+                      className="shrink-0"
+                      style={{ fontFamily: "'IBM Plex Mono', monospace", color: w.accuracy < 50 ? "#B8493F" : T.inkSoft }}
+                    >
+                      {w.accuracy}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </div>
@@ -2617,6 +2882,7 @@ function Home({
               <Lock size={14} /> Admin sign-in
             </button>
           )}
+          <NotificationPermissionRow />
           <button
             onClick={onSignOut}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
@@ -2747,6 +3013,24 @@ function Home({
 
       <main className="max-w-5xl mx-auto px-6 -mt-4">
         {daysToExam !== null && <CircularCountdown days={daysToExam} courseLabel={userCourse} />}
+        {showDailyReminder && (
+          <div
+            className="flex items-center justify-between gap-3 mb-4 px-4 py-3"
+            style={{ background: T.amberSoft, color: "#3A2C0E", borderRadius: 10 }}
+          >
+            <div className="flex items-center gap-2 text-sm">
+              <Bell size={16} /> You haven't done today's Daily Challenge yet — keep the streak going!
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <button onClick={onDailyChallenge} className="text-xs px-3 py-1.5" style={{ background: "#3A2C0E", color: "#fff", borderRadius: 6 }}>
+                Do it now
+              </button>
+              <button onClick={dismissDailyReminder} style={{ color: "#3A2C0E" }}>
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
         {/* Choose Your Program */}
         <div
           className="flex items-center justify-between mb-4 px-4 py-3 relative z-10"
@@ -2962,7 +3246,6 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
                       {s.name}
                     </span>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
-                      <span>{s.count} question{s.count === 1 ? "" : "s"} available</span>
                       <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
@@ -3023,7 +3306,6 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
                     {b.name}
                   </span>
                   <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
-                    <span>{b.count} question{b.count === 1 ? "" : "s"} available</span>
                     <AccuracyBadge pct={b.accuracy} />
                   </div>
                 </div>
@@ -3087,7 +3369,6 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
                       {s.name}
                     </span>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
-                      <span>{s.count} question{s.count === 1 ? "" : "s"} available</span>
                       <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
@@ -3147,7 +3428,6 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
                 </div>
                 <span className="text-xs shrink-0 flex flex-col items-end gap-1" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                  <span>{t.count} q</span>
                   <AccuracyBadge pct={t.accuracy} />
                 </span>
               </button>
@@ -3220,7 +3500,6 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</span>
                 </div>
                 <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                  <span>{r.count} q</span>
                   {r.isFolder && <ChevronRight size={14} />}
                 </span>
               </button>
@@ -3294,9 +3573,6 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
                       </span>
                       {isNested && <ChevronRight size={16} style={{ color: T.inkSoft }} />}
                     </div>
-                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
-                      {n} question{n === 1 ? "" : "s"} {isNested ? `across ${(f.subfolders || []).length} test${(f.subfolders || []).length === 1 ? "" : "s"}` : "available"}
-                    </div>
                   </div>
                 </button>
               );
@@ -3358,9 +3634,6 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
                       {f}
                     </span>
-                    <div className="text-sm mt-1" style={{ color: T.inkSoft }}>
-                      {n} question{n === 1 ? "" : "s"} available
-                    </div>
                   </div>
                 </button>
               );
@@ -3437,7 +3710,7 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
 }
 
 // ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome }) {
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, currentUserName }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -3458,6 +3731,15 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
   const maxCount = filtered.length;
   const chosenCount = Math.min(count, Math.max(1, maxCount));
   const SECONDS_PER_Q = 60;
+  const topicKey = [program, year, block, subject, topic].filter(Boolean).join(" | ");
+  const thread = (discussions && discussions[topicKey]) || [];
+  const [comment, setComment] = useState("");
+  const submitComment = () => {
+    const text = comment.trim();
+    if (!text) return;
+    onPostDiscussion(topicKey, text);
+    setComment("");
+  };
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -3530,13 +3812,130 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
         >
           {timed ? "Begin timed exam →" : "Begin practice →"}
         </button>
+
+        <div className="mt-12 pt-8" style={{ borderTop: `1px solid ${T.line}` }}>
+          <div className="text-sm mb-4 flex items-center gap-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+            <MessageCircle size={14} /> Doubts & Discussion
+          </div>
+          <div className="space-y-3 mb-4">
+            {thread.length === 0 ? (
+              <div className="text-sm" style={{ color: T.inkSoft }}>No questions asked yet — be the first!</div>
+            ) : (
+              thread.map((c) => (
+                <div key={c.id} className="p-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
+                      {c.name}{currentUserName && c.name === currentUserName ? " (You)" : ""}
+                    </span>
+                    <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      {new Date(c.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div>{c.text}</div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitComment()}
+              placeholder="Ask a doubt or share a tip…"
+              className="flex-1 px-3 py-2 text-sm"
+              style={{ border: `1px solid ${T.line}`, background: T.card }}
+            />
+            <button onClick={submitComment} className="px-4 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
+              Post
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 // ---------- Quiz ----------
-function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark }) {
+// ---------- Explanation feedback + Report a question (used in Quiz & Results) ----------
+function QuestionFeedbackBar({ question, feedback, onVote, onReport }) {
+  const [voted, setVoted] = useState(() => {
+    try {
+      return localStorage.getItem(`mdcat-voted-${question.id}`) || "";
+    } catch {
+      return "";
+    }
+  });
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportText, setReportText] = useState("");
+  const [reportSent, setReportSent] = useState(false);
+  const counts = (feedback && feedback[question.id]) || { up: 0, down: 0 };
+
+  const vote = (dir) => {
+    if (voted) return;
+    setVoted(dir);
+    try {
+      localStorage.setItem(`mdcat-voted-${question.id}`, dir);
+    } catch {}
+    onVote(question.id, dir);
+  };
+
+  const submitReport = () => {
+    onReport(question, reportText.trim());
+    setReportSent(true);
+    setReportOpen(false);
+  };
+
+  return (
+    <div className="flex items-center justify-between flex-wrap gap-2 mb-6 text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+      <div className="flex items-center gap-3">
+        <span>Was this explanation helpful?</span>
+        <button
+          onClick={() => vote("up")}
+          disabled={!!voted}
+          className="flex items-center gap-1 px-2 py-1 disabled:opacity-60"
+          style={{ border: `1px solid ${T.line}`, background: voted === "up" ? T.emeraldSoft || T.card : T.card }}
+        >
+          👍 {counts.up || 0}
+        </button>
+        <button
+          onClick={() => vote("down")}
+          disabled={!!voted}
+          className="flex items-center gap-1 px-2 py-1 disabled:opacity-60"
+          style={{ border: `1px solid ${T.line}`, background: voted === "down" ? T.card : T.card }}
+        >
+          👎 {counts.down || 0}
+        </button>
+      </div>
+      <div>
+        {reportSent ? (
+          <span>Report sent — thanks!</span>
+        ) : reportOpen ? (
+          <div className="flex items-center gap-2">
+            <input
+              value={reportText}
+              onChange={(e) => setReportText(e.target.value)}
+              placeholder="What's wrong? (optional)"
+              className="px-2 py-1"
+              style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "inherit" }}
+            />
+            <button onClick={submitReport} className="px-2 py-1" style={{ background: T.ink, color: T.paper }}>
+              Send
+            </button>
+            <button onClick={() => setReportOpen(false)} style={{ color: T.inkSoft }}>
+              <X size={12} />
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setReportOpen(true)} className="flex items-center gap-1" style={{ color: T.inkSoft }}>
+            <FileText size={12} /> Report a question
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
   const [answerTimes, setAnswerTimes] = useState({});
@@ -3703,6 +4102,15 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
           </div>
         )}
 
+        {revealed && (
+          <QuestionFeedbackBar
+            question={q}
+            feedback={explanationFeedback}
+            onVote={onVoteExplanation}
+            onReport={onReportQuestion}
+          />
+        )}
+
         <div className="flex items-center justify-between">
           <button
             disabled={idx === 0}
@@ -3736,7 +4144,7 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
 }
 
 // ---------- Results ----------
-function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark }) {
+function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion }) {
   const { questions, answers, correct } = result;
   const pct = Math.round((correct / questions.length) * 100);
   const letters = ["A", "B", "C", "D"];
@@ -3803,6 +4211,14 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
                     {q.explanation}
                   </div>
                 )}
+                <div className="mt-3">
+                  <QuestionFeedbackBar
+                    question={q}
+                    feedback={explanationFeedback}
+                    onVote={onVoteExplanation}
+                    onReport={onReportQuestion}
+                  />
+                </div>
               </div>
             );
           })}
@@ -4249,7 +4665,7 @@ function AdminGate({ onUnlock, onBack }) {
 const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", type: "text", content: "" };
 const EMPTY_NOTIF_FORM = { title: "", message: "" };
 
-function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, onExit }) {
+function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit }) {
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -4356,6 +4772,49 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     setDashLoading(false);
   };
   useEffect(() => { loadDashboard(); }, []);
+
+  // ---- Content Analytics: bank breakdown + cross-student weak topics ----
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [allSubjectStats, setAllSubjectStats] = useState([]);
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true);
+    setAllSubjectStats(await loadAllStudentSubjectStats());
+    setAnalyticsLoading(false);
+  };
+  useEffect(() => { loadAnalytics(); }, []);
+
+  const bankBreakdown = useMemo(() => {
+    const c = {};
+    bank.forEach((q) => { c[q.program] = (c[q.program] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  }, [bank]);
+
+  const cohortWeakTopics = useMemo(() => {
+    const totals = {};
+    allSubjectStats.forEach((bySubject) => {
+      Object.entries(bySubject || {}).forEach(([key, v]) => {
+        if (!totals[key]) totals[key] = { attempted: 0, correct: 0 };
+        totals[key].attempted += v.attempted || 0;
+        totals[key].correct += v.correct || 0;
+      });
+    });
+    return Object.entries(totals)
+      .map(([key, v]) => ({ key, ...v, accuracy: v.attempted > 0 ? Math.round((v.correct / v.attempted) * 100) : 0 }))
+      .filter((e) => e.attempted >= 5)
+      .sort((a, b) => a.accuracy - b.accuracy)
+      .slice(0, 10);
+  }, [allSubjectStats]);
+
+  const lowestRatedExplanations = useMemo(() => {
+    return Object.entries(explanationFeedback || {})
+      .map(([qId, v]) => ({ qId, up: v.up || 0, down: v.down || 0 }))
+      .filter((e) => e.down > 0)
+      .sort((a, b) => b.down - a.down)
+      .slice(0, 10)
+      .map((e) => ({ ...e, question: bank.find((q) => q.id === e.qId) }));
+  }, [explanationFeedback, bank]);
+
+  const openReports = questionReports.filter((r) => !r.resolved);
 
   const dashStats = useMemo(() => {
     const { installs, usage } = dashData;
@@ -4651,6 +5110,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             { k: "notifications", label: "Notifications" },
             { k: "examdates", label: "Exam Dates" },
             { k: "dashboard", label: "Dashboard" },
+            { k: "analytics", label: "Analytics" },
+            { k: "reports", label: `Reports${openReports.length > 0 ? ` (${openReports.length})` : ""}` },
             { k: "settings", label: "Settings" },
           ].map((t) => (
             <button
@@ -5502,6 +5963,125 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           </div>
         )}
 
+        {tab === "analytics" && (
+          <div className="max-w-3xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl flex items-center gap-2">
+                <TrendingUp size={18} /> Content Analytics
+              </h2>
+              <button onClick={loadAnalytics} className="flex items-center gap-1 text-xs px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
+                <RotateCcw size={12} /> Refresh
+              </button>
+            </div>
+
+            <div className="text-sm mb-2" style={{ color: T.inkSoft }}>Question bank size by program</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
+              {bankBreakdown.map(([prog, n]) => (
+                <div key={prog} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <div className="text-xs mb-1" style={{ color: T.inkSoft }}>{prog}</div>
+                  <div className="text-2xl" style={{ fontFamily: "'Source Serif 4', serif" }}>{n}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="text-sm mb-3" style={{ color: T.inkSoft }}>Where students struggle most (across everyone, min. 5 attempts)</div>
+            {analyticsLoading ? (
+              <div className="text-sm mb-8" style={{ color: T.inkSoft }}>Loading…</div>
+            ) : cohortWeakTopics.length === 0 ? (
+              <div className="p-6 mb-8 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+                Not enough attempt data yet. (If this stays empty, the same RLS read-policy used for
+                the leaderboard is required on <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>user_stats</code>.)
+              </div>
+            ) : (
+              <div className="space-y-2 mb-8">
+                {cohortWeakTopics.map((w) => (
+                  <div key={w.key} className="flex items-center justify-between p-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <span className="truncate pr-2">{w.key}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: w.accuracy < 50 ? "#B8493F" : T.inkSoft }}>
+                      {w.accuracy}% · {w.attempted} attempts
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="text-sm mb-3" style={{ color: T.inkSoft }}>Lowest-rated explanations (👎 votes)</div>
+            {lowestRatedExplanations.length === 0 ? (
+              <div className="p-6 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+                No feedback yet.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {lowestRatedExplanations.map((e) => (
+                  <div key={e.qId} className="p-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="truncate pr-2">{e.question ? e.question.question : "(question deleted)"}</span>
+                      <span className="shrink-0" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                        👍 {e.up} · 👎 {e.down}
+                      </span>
+                    </div>
+                    {e.question && (
+                      <button
+                        onClick={() => startEdit(e.question)}
+                        className="text-xs flex items-center gap-1"
+                        style={{ color: T.blue }}
+                      >
+                        <Pencil size={11} /> Edit this question
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "reports" && (
+          <div className="max-w-3xl">
+            <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-4 flex items-center gap-2">
+              <FileText size={18} /> Reported Questions
+            </h2>
+            {questionReports.length === 0 ? (
+              <div className="p-6 text-sm text-center" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+                No reports yet.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {[...questionReports].reverse().map((r) => {
+                  const liveQuestion = bank.find((q) => q.id === r.questionId);
+                  return (
+                    <div key={r.id} className="p-4 text-sm" style={{ background: T.card, border: `1px solid ${r.resolved ? T.line : T.amber}` }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                          {r.program} · {r.subject}{r.topic ? ` · ${r.topic}` : ""} — by {r.reporterName}
+                        </span>
+                        {r.resolved && <span className="text-xs" style={{ color: T.emerald }}>Resolved</span>}
+                      </div>
+                      <div className="mb-1" style={{ fontFamily: "'Source Serif 4', serif" }}>{r.questionText}</div>
+                      {r.reason && <div className="text-xs mb-2" style={{ color: T.inkSoft }}>Reason: {r.reason}</div>}
+                      <div className="flex items-center gap-3">
+                        {liveQuestion && (
+                          <button onClick={() => startEdit(liveQuestion)} className="text-xs flex items-center gap-1" style={{ color: T.blue }}>
+                            <Pencil size={11} /> Edit question
+                          </button>
+                        )}
+                        {!r.resolved && (
+                          <button onClick={() => onResolveReport(r.id)} className="text-xs flex items-center gap-1" style={{ color: T.emerald }}>
+                            <Check size={11} /> Mark resolved
+                          </button>
+                        )}
+                        <button onClick={() => onDeleteReport(r.id)} className="text-xs flex items-center gap-1" style={{ color: "#B8493F" }}>
+                          <Trash2 size={11} /> Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "settings" && (
           <div className="max-w-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -5532,6 +6112,9 @@ export default function App() {
   const [notesBank, setNotesBank] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [reviews, setReviews] = useState([]);
+  const [explanationFeedback, setExplanationFeedback] = useState({});
+  const [questionReports, setQuestionReports] = useState([]);
+  const [discussions, setDiscussions] = useState({});
   const [syllabusItems, setSyllabusItems] = useState([]);
   const [guidelineItems, setGuidelineItems] = useState([]);
   const [contactItems, setContactItems] = useState([]);
@@ -5598,8 +6181,9 @@ export default function App() {
         await saveBank(b, { force: true });
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con, sl, ed] = await Promise.all([
+      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc] = await Promise.all([
         loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(), loadExamDates(),
+        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(),
       ]);
       setNotesBank(n);
       setNotifications(notifs);
@@ -5609,6 +6193,9 @@ export default function App() {
       setContactItems(con);
       setSocialLinks(sl);
       setExamDates(ed);
+      setExplanationFeedback(ef);
+      setQuestionReports(qr);
+      setDiscussions(disc);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -5822,6 +6409,57 @@ export default function App() {
     const next = [...reviews, { ...review, id: uid(), createdAt: new Date().toISOString() }];
     setReviews(next);
     await saveReviews(next);
+  };
+
+  // ---- Explanation feedback: 👍/👎 tally per question ----
+  const voteExplanation = async (questionId, dir) => {
+    const current = explanationFeedback[questionId] || { up: 0, down: 0 };
+    const next = { ...explanationFeedback, [questionId]: { ...current, [dir]: (current[dir] || 0) + 1 } };
+    setExplanationFeedback(next);
+    await saveExplanationFeedback(next);
+  };
+
+  // ---- Report a question: flag it for admin review ----
+  const reportQuestion = async (question, reasonText) => {
+    const entry = {
+      id: uid(),
+      questionId: question.id,
+      questionText: question.question,
+      program: question.program,
+      subject: question.subject,
+      topic: question.topic || "",
+      reporterName: user?.user_metadata?.name || user?.email || "Anonymous",
+      reason: reasonText || "",
+      createdAt: new Date().toISOString(),
+      resolved: false,
+    };
+    const next = [...questionReports, entry];
+    setQuestionReports(next);
+    await saveQuestionReports(next);
+  };
+  const resolveReport = async (reportId) => {
+    const next = questionReports.map((r) => (r.id === reportId ? { ...r, resolved: true } : r));
+    setQuestionReports(next);
+    await saveQuestionReports(next);
+  };
+  const deleteReport = async (reportId) => {
+    const next = questionReports.filter((r) => r.id !== reportId);
+    setQuestionReports(next);
+    await saveQuestionReports(next);
+  };
+
+  // ---- Discussion threads: one comment list per topic, keyed by a stable string ----
+  const postDiscussion = async (topicKey, text) => {
+    const entry = {
+      id: uid(),
+      name: user?.user_metadata?.name || user?.email || "Anonymous",
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    const nextThread = [...(discussions[topicKey] || []), entry];
+    const next = { ...discussions, [topicKey]: nextThread };
+    setDiscussions(next);
+    await saveDiscussions(next);
   };
 
   // ---- Syllabus items: admin-only add/remove ----
@@ -6058,6 +6696,10 @@ export default function App() {
         setNotesBank={setNotesBank}
         notifications={notifications}
         setNotifications={setNotifications}
+        questionReports={questionReports}
+        onResolveReport={resolveReport}
+        onDeleteReport={deleteReport}
+        explanationFeedback={explanationFeedback}
         onExit={() => setView("home")}
       />
     );
@@ -6145,6 +6787,9 @@ export default function App() {
         onBack={() => setView(program === "MBBS" ? (mbbsTreeActive ? "mbbs-topic" : "block") : subjectHasTopics ? "topic" : "program")}
         onStart={startQuiz}
         onHome={() => setView("home")}
+        discussions={discussions}
+        onPostDiscussion={postDiscussion}
+        currentUserName={user?.user_metadata?.name || ""}
       />
     );
   }
@@ -6195,6 +6840,9 @@ export default function App() {
         onFinish={finishQuiz}
         onExit={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
         onHome={() => setView("home")}
+        explanationFeedback={explanationFeedback}
+        onVoteExplanation={voteExplanation}
+        onReportQuestion={reportQuestion}
       />
     );
   }
@@ -6207,6 +6855,9 @@ export default function App() {
         onToggleBookmark={toggleBookmark}
         onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
         onHome={() => setView("home")}
+        explanationFeedback={explanationFeedback}
+        onVoteExplanation={voteExplanation}
+        onReportQuestion={reportQuestion}
       />
     );
   }
