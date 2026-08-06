@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import {
   Dna, FlaskConical, Atom, BookOpen, Lock, Unlock, Plus, Pencil, Trash2,
   ChevronLeft, ChevronRight, Check, X, RotateCcw, Search, Settings,
-  ClipboardList, GraduationCap, ShieldCheck, ArrowLeft, Save, LogOut, ChevronRight,
+  ClipboardList, GraduationCap, ShieldCheck, ArrowLeft, Save, LogOut,
   Stethoscope, HeartPulse, BadgeCheck, Bell, User, Menu, Target,
   ClipboardCheck, FileText, TrendingUp, Calendar, Trophy, Bookmark,
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
