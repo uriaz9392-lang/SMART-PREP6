@@ -21,15 +21,15 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://ehkrddewmmilogbojvkh.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 
-// Use sessionStorage (instead of the default localStorage) to keep the login
-// session. This ties "being logged in" to the current browser/app session:
-// - Normal use (reopening the app, refreshing the page) keeps working fine.
-// - When the app is fully closed & its data cleared, or uninstalled and then
-//   reinstalled, sessionStorage is gone — so the student will be asked to log
-//   in again instead of the app silently staying logged in forever.
+// Use localStorage (instead of sessionStorage) to keep the login session.
+// This ties "being logged in" to the device/browser itself, not to a single
+// open-app session:
+// - Closing and reopening the app (or the browser) keeps the student logged in.
+// - Only uninstalling the app (or clearing site data / signing out) removes
+//   the saved session, at which point the student has to log in again.
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    storage: typeof window !== "undefined" ? window.sessionStorage : undefined,
+    storage: typeof window !== "undefined" ? window.localStorage : undefined,
     persistSession: true,
     autoRefreshToken: true,
   },
@@ -6401,7 +6401,11 @@ export default function App() {
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
     const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "" };
     setStats(nextStats);
-    if (user) await saveUserStats(user.id, nextStats);
+    if (user) {
+      await saveUserStats(user.id, nextStats);
+    } else {
+      alert("You're not logged in, so this bookmark wasn't saved. Please log in to keep your bookmarks.");
+    }
   };
 
   // ---- Reviews: any signed-in student can add one; visible to everyone ----
@@ -6593,7 +6597,11 @@ export default function App() {
       correct: (next.bySubject[statsKey]?.correct || 0) + res.correct,
     };
     setStats(next);
-    if (user) await saveUserStats(user.id, next);
+    if (user) {
+      await saveUserStats(user.id, next);
+    } else {
+      alert("You're not logged in, so this result wasn't saved. Please log in to keep your progress and appear on the leaderboard.");
+    }
     setView("results");
   };
 
