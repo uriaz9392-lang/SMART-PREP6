@@ -1153,6 +1153,35 @@ async function loadBank() {
   }
 }
 
+// ---- Bandwidth saver: only re-download the (large) question bank when it has
+// actually changed. bank_version is a tiny integer column on app_data that gets
+// bumped every time saveBank() succeeds. Checking it first is a near-free request
+// (a handful of bytes) instead of re-downloading the entire multi-MB bank on
+// every single app open, which was the main driver of Supabase egress usage.
+async function loadBankVersion() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return data && typeof data.bank_version === "number" ? data.bank_version : null;
+  } catch (e) {
+    console.error("Load bank_version failed:", e);
+    return null;
+  }
+}
+function loadLocalBankVersion() {
+  try {
+    const v = localStorage.getItem("mdcat-bank-version");
+    return v ? Number(v) : null;
+  } catch {
+    return null;
+  }
+}
+function saveLocalBankVersion(v) {
+  try {
+    if (typeof v === "number") localStorage.setItem("mdcat-bank-version", String(v));
+  } catch {}
+}
+
 // Tracks the last known-good bank size in this browser tab, so saveBank() can refuse a
 // save that would suddenly wipe out most of the question bank in one go — a save that
 // large is almost always an accident (a bad load, a bug, a bad merge), not an intentional
@@ -1173,6 +1202,16 @@ async function saveBank(bank, opts = {}) {
   if (ok) {
     lastKnownBankLength = newLen;
     saveLocalBankCache(bank);
+    // Bump bank_version so every student's app knows to re-download the fresh
+    // bank next time it opens, instead of everyone re-downloading on every open.
+    try {
+      const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+      const nextVersion = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
+      await supabase.from("app_data").update({ bank_version: nextVersion }).eq("id", 1);
+      saveLocalBankVersion(nextVersion);
+    } catch (e) {
+      console.error("Could not bump bank_version (bank still saved fine):", e);
+    }
   }
   return ok;
 }
@@ -6159,26 +6198,40 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const loaded = await loadBank();
+      // Bandwidth saver: check the tiny bank_version number first. If it matches
+      // what we already have cached on this device, skip re-downloading the
+      // entire (large) question bank — reuse the local cache instead. This is
+      // what cuts down repeated egress across many students opening the app.
+      const remoteVersion = await loadBankVersion();
+      const localVersion = loadLocalBankVersion();
+      const cachedBank = loadLocalBankCache();
       let b;
-      if (loaded) {
-        // Real bank, loaded successfully.
-        b = loaded;
+      if (remoteVersion !== null && localVersion !== null && remoteVersion === localVersion && cachedBank && cachedBank.length > 0) {
+        // Nothing changed since last time — use the cached bank, no big download.
+        b = cachedBank;
         lastKnownBankLength = b.length;
-        saveLocalBankCache(b);
-      } else if (loaded === false) {
-        // The fetch itself failed — do NOT seed or touch Supabase. Fall back to
-        // whatever was last cached on this device so the app doesn't look empty.
-        const cached = loadLocalBankCache();
-        b = cached || [];
-        if (!cached) {
-          console.error("Could not load the question bank (no internet / Supabase error), and no local cache exists yet on this device.");
-        }
       } else {
-        // loaded === null: Supabase was reached fine and confirmed there is genuinely
-        // no bank yet — this only happens once, on a brand new project.
-        b = SEED_MCQS;
-        await saveBank(b, { force: true });
+        const loaded = await loadBank();
+        if (loaded) {
+          // Real bank, loaded successfully.
+          b = loaded;
+          lastKnownBankLength = b.length;
+          saveLocalBankCache(b);
+          if (remoteVersion !== null) saveLocalBankVersion(remoteVersion);
+        } else if (loaded === false) {
+          // The fetch itself failed — do NOT seed or touch Supabase. Fall back to
+          // whatever was last cached on this device so the app doesn't look empty.
+          const cached = cachedBank;
+          b = cached || [];
+          if (!cached) {
+            console.error("Could not load the question bank (no internet / Supabase error), and no local cache exists yet on this device.");
+          }
+        } else {
+          // loaded === null: Supabase was reached fine and confirmed there is genuinely
+          // no bank yet — this only happens once, on a brand new project.
+          b = SEED_MCQS;
+          await saveBank(b, { force: true });
+        }
       }
       setBank(b);
       const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc] = await Promise.all([
