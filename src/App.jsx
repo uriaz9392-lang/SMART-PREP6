@@ -1283,6 +1283,14 @@ function clearLocalBankVersion() {
 // edit. Genuine bulk deletes (which already ask for confirmation) pass { force: true }.
 let lastKnownBankLength = null;
 
+// Tracks the bank_version this browser tab last saw (either from its initial load,
+// or right after this tab itself last saved). Used as an optimistic-concurrency
+// check: if some OTHER tab/device has changed the bank since we last saw it, we
+// refuse to blindly overwrite with our own (now-stale) copy. Without this, an
+// admin editing from two tabs/devices at once could have an old tab's stale bank
+// silently "resurrect" MCQs that were just deleted in the other tab.
+let lastKnownBankVersion = null;
+
 async function saveBank(bank, opts = {}) {
   const newLen = Array.isArray(bank) ? bank.length : 0;
   if (!opts.force && lastKnownBankLength !== null && lastKnownBankLength >= 10 && newLen < lastKnownBankLength * 0.5) {
@@ -1292,6 +1300,24 @@ async function saveBank(bank, opts = {}) {
       `If this drop really is intentional, delete in smaller batches, or confirm through the bulk-delete flow.`
     );
     return "blocked";
+  }
+  // Concurrency check: has someone else (another tab/device) saved since we last loaded?
+  if (!opts.force && lastKnownBankVersion !== null) {
+    try {
+      const { data: vCheck } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+      const currentRemoteVersion = vCheck && typeof vCheck.bank_version === "number" ? vCheck.bank_version : null;
+      if (currentRemoteVersion !== null && currentRemoteVersion !== lastKnownBankVersion) {
+        alert(
+          "This question bank was changed elsewhere (another tab or device) since this screen loaded your copy. " +
+          "To avoid undoing that change or bringing back a deleted question, please reload the app and try your edit again."
+        );
+        return "stale";
+      }
+    } catch (e) {
+      // If we can't even check, fail safe by allowing the save through rather than
+      // blocking all edits over a transient network hiccup.
+      console.error("Could not verify bank_version before saving (proceeding anyway):", e);
+    }
   }
   const ok = await saveSharedData({ bank });
   if (ok) {
@@ -1305,6 +1331,7 @@ async function saveBank(bank, opts = {}) {
       const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
       const nextVersion = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
       await supabase.from("app_data").update({ bank_version: nextVersion }).eq("id", 1);
+      lastKnownBankVersion = nextVersion;
       // Only record this version as "ours" if our own local cache actually
       // saved successfully — otherwise this same device would wrongly trust
       // its own stale/incomplete cache next time it opens the app.
@@ -5301,24 +5328,38 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const startAdd = () => { setForm(EMPTY_FORM); setEditingId(null); setTab("form"); };
   const startEdit = (q) => { setForm({ ...q, options: [...q.options] }); setEditingId(q.id); setTab("form"); };
 
+  // Deletes exactly one question, directly and atomically inside the database
+  // via the delete_mcq() function — not by reading the whole bank, removing
+  // the item locally, and writing the whole bank back. This is what makes
+  // the deletion permanent: there's no "stale copy from elsewhere" that can
+  // ever overwrite it back into existence, because nothing ever sends the
+  // full array back for a delete.
   const remove = async (id) => {
     const prev = bank;
-    const fresh = (await loadBank()) || bank;
-    const next = fresh.filter((q) => q.id !== id);
-    setBank(next);
-    const ok = await saveBank(next);
-    if (ok !== true) {
+    const next = bank.filter((q) => q.id !== id);
+    setBank(next); // optimistic UI update
+    try {
+      const { error } = await supabase.rpc("delete_mcq", { question_id: id });
+      if (error) throw error;
+      lastKnownBankLength = next.length;
+      const cacheSaved = saveLocalBankCache(next);
+      try {
+        const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+        const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
+        lastKnownBankVersion = v;
+        if (v !== null && cacheSaved) saveLocalBankVersion(v);
+        else clearLocalBankVersion();
+      } catch {}
+    } catch (e) {
+      console.error("Delete failed:", e);
       setBank(prev);
-      alert(
-        ok === "blocked"
-          ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
-          : "Could not delete this question — check your internet connection and try again."
-      );
+      alert("Could not delete this question — check your internet connection and try again.");
     }
   };
 
   // Deletes every question currently matching the search/program filters in one go
   // (e.g. filter to "Chemistry" and wipe the whole subject instead of deleting one by one).
+  // Also atomic on the database side via delete_mcqs() — same permanence guarantee.
   const bulkDeleteFiltered = async () => {
     if (filtered.length === 0) return;
     const ok1 = window.confirm(
@@ -5326,16 +5367,27 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     );
     if (!ok1) return;
     const prev = bank;
-    const fresh = (await loadBank()) || bank;
-    const idsToRemove = new Set(filtered.map((q) => q.id));
-    const next = fresh.filter((q) => !idsToRemove.has(q.id));
+    const idsToRemove = filtered.map((q) => q.id);
+    const idSet = new Set(idsToRemove);
+    const next = bank.filter((q) => !idSet.has(q.id));
     setBank(next);
-    const ok = await saveBank(next, { force: true });
-    if (ok !== true) {
+    try {
+      const { error } = await supabase.rpc("delete_mcqs", { question_ids: idsToRemove });
+      if (error) throw error;
+      lastKnownBankLength = next.length;
+      const cacheSaved = saveLocalBankCache(next);
+      try {
+        const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+        const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
+        lastKnownBankVersion = v;
+        if (v !== null && cacheSaved) saveLocalBankVersion(v);
+        else clearLocalBankVersion();
+      } catch {}
+      alert(`${idsToRemove.length} question(s) deleted.`);
+    } catch (e) {
+      console.error("Bulk delete failed:", e);
       setBank(prev);
       alert("Could not delete these questions — check your internet connection and try again.");
-    } else {
-      alert(`${idsToRemove.size} question(s) deleted.`);
     }
   };
 
@@ -6466,6 +6518,10 @@ export default function App() {
       const localVersion = loadLocalBankVersion();
       const cachedBank = loadLocalBankCache();
       let b;
+      // Remember the freshest version number this tab has seen, regardless of
+      // which branch below actually runs — saveBank() uses it later to detect
+      // if another tab/device changed the data in the meantime.
+      if (remoteVersion !== null) lastKnownBankVersion = remoteVersion;
       if (remoteVersion !== null && localVersion !== null && remoteVersion === localVersion && cachedBank && cachedBank.length > 0) {
         // Nothing changed since last time — use the cached bank, no big download.
         b = cachedBank;
