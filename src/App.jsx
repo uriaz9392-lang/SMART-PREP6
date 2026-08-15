@@ -8,7 +8,7 @@ import {
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
   Instagram, Facebook, Music2, Brain, FileCheck2, Clock, Smartphone,
-  Timer, Activity,
+  Timer, Activity, Share2,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -111,8 +111,15 @@ function saveLocalBankCache(bank) {
   try {
     if (Array.isArray(bank) && bank.length > 0) {
       localStorage.setItem("mdcat-bank-cache", JSON.stringify(bank));
+      return true;
     }
-  } catch {}
+    return false;
+  } catch {
+    // Most likely the bank is too large for this browser's localStorage quota.
+    // Returning false tells the caller NOT to trust/record a cache version,
+    // so we never silently keep serving a stale, incomplete cached bank.
+    return false;
+  }
 }
 
 // ---- Authentication ----
@@ -1046,6 +1053,89 @@ function pastPaperLeafNames(program) {
   );
 }
 
+// ============================================================================
+// SHARE HELPERS — every chapter / topic / folder can be shared with a friend
+// via a link. Opening the link takes the friend straight to that same content
+// inside the app (after they log in), and the shared message also includes a
+// line inviting them to install the app.
+//
+// This is a PWA (installable website), so "download the app" simply means
+// visiting this same site's home page and tapping "Add to Home Screen" —
+// no separate Play Store link needed. Using window.location.origin means
+// this always points to wherever the app is actually deployed, with no
+// hardcoded URL to maintain.
+// ============================================================================
+function getAppDownloadUrl() {
+  return typeof window !== "undefined" ? window.location.origin : "";
+}
+
+function encodeShareState(state) {
+  try {
+    return btoa(encodeURIComponent(JSON.stringify(state)));
+  } catch {
+    return "";
+  }
+}
+function decodeShareState(encoded) {
+  try {
+    return JSON.parse(decodeURIComponent(atob(encoded)));
+  } catch {
+    return null;
+  }
+}
+function buildShareUrl(state) {
+  if (typeof window === "undefined") return "";
+  const code = encodeShareState(state);
+  const base = `${window.location.origin}${window.location.pathname}`;
+  return `${base}?share=${code}`;
+}
+
+// Opens the device's native share sheet (WhatsApp, SMS, email, etc.) when
+// available; otherwise falls back to copying the link so the student can
+// paste it anywhere themselves.
+async function shareTarget({ label, state }) {
+  const url = buildShareUrl(state);
+  const text = `${label} — check this out on the app:\n${url}\n\nDon't have the app yet? Open this link and tap "Add to Home Screen" to install it: ${getAppDownloadUrl()}`;
+  if (typeof navigator !== "undefined" && navigator.share) {
+    try {
+      await navigator.share({ title: label, text, url });
+    } catch {
+      // Student cancelled the native share sheet — nothing else to do.
+    }
+    return;
+  }
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      alert("Link copied! You can now paste it to your friend on WhatsApp, SMS, etc.");
+      return;
+    } catch {}
+  }
+  window.prompt("Copy this link to share with a friend:", text);
+}
+
+// Small share-icon button, meant to sit inside a folder/topic card. Always
+// stops the click from bubbling up to the card's own onClick (which would
+// otherwise also open the folder when the student only meant to share it).
+function ShareButton({ label, state, size = 16, className = "" }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        shareTarget({ label, state });
+      }}
+      title="Share with a friend"
+      aria-label="Share with a friend"
+      className={`shrink-0 p-1.5 rounded-full transition-colors hover:opacity-70 ${className}`}
+      style={{ color: T.inkSoft }}
+    >
+      <Share2 size={size} />
+    </button>
+  );
+}
+
 // ---------- FLP (Full Length Paper) — auto-generated exam blueprints ----------
 // For each program: total question count, total time (in seconds), and how many
 // questions come from each subject. MBBS and BSN are left unconfigured for now
@@ -1181,6 +1271,11 @@ function saveLocalBankVersion(v) {
     if (typeof v === "number") localStorage.setItem("mdcat-bank-version", String(v));
   } catch {}
 }
+function clearLocalBankVersion() {
+  try {
+    localStorage.removeItem("mdcat-bank-version");
+  } catch {}
+}
 
 // Tracks the last known-good bank size in this browser tab, so saveBank() can refuse a
 // save that would suddenly wipe out most of the question bank in one go — a save that
@@ -1201,14 +1296,23 @@ async function saveBank(bank, opts = {}) {
   const ok = await saveSharedData({ bank });
   if (ok) {
     lastKnownBankLength = newLen;
-    saveLocalBankCache(bank);
+    const cacheSaved = saveLocalBankCache(bank);
     // Bump bank_version so every student's app knows to re-download the fresh
     // bank next time it opens, instead of everyone re-downloading on every open.
+    // This part always runs, regardless of whether OUR OWN local cache below
+    // fit in this browser's storage — other devices still need the real signal.
     try {
       const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
       const nextVersion = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
       await supabase.from("app_data").update({ bank_version: nextVersion }).eq("id", 1);
-      saveLocalBankVersion(nextVersion);
+      // Only record this version as "ours" if our own local cache actually
+      // saved successfully — otherwise this same device would wrongly trust
+      // its own stale/incomplete cache next time it opens the app.
+      if (cacheSaved) {
+        saveLocalBankVersion(nextVersion);
+      } else {
+        clearLocalBankVersion();
+      }
     } catch (e) {
       console.error("Could not bump bank_version (bank still saved fine):", e);
     }
@@ -3249,9 +3353,12 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
-          <ArrowLeft size={16} /> Back to programs
-        </button>
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to programs
+          </button>
+          <ShareButton label={progInfo ? progInfo.label : program} state={{ v: "program", p: program }} />
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {progInfo ? progInfo.label : program}
         </h1>
@@ -3267,11 +3374,20 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {groups.map((s) => {
               const Icon = isMBBS ? GraduationCap : subjectIcon(s.name);
+              const hasTopics = !isMBBS && TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[s.name] || []).length > 0;
+              const shareState = isMBBS
+                ? { v: "year", p: program, y: s.name }
+                : hasTopics
+                ? { v: "topic", p: program, s: s.name }
+                : { v: "subject", p: program, s: s.name };
               return (
-                <button
+                <div
                   key={s.name}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))}
-                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                  onKeyDown={(e) => { if (e.key === "Enter") (isMBBS ? onOpenYear(s.name) : onOpenSubject(s.name))(); }}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -3280,15 +3396,18 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
                   >
                     <Icon size={22} style={{ color: "#fff" }} />
                   </div>
-                  <div>
-                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
-                      {s.name}
-                    </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                        {s.name}
+                      </span>
+                      <ShareButton label={s.name} state={shareState} />
+                    </div>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                       <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -3313,7 +3432,19 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to years" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to years
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={year} state={{ v: "year", p: program, y: year }} />
+          </div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year}
         </h1>
@@ -3328,10 +3459,13 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {blocks.map((b) => (
-              <button
+              <div
                 key={b.name}
+                role="button"
+                tabIndex={0}
                 onClick={() => onOpenBlock(b.name)}
-                className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                onKeyDown={(e) => { if (e.key === "Enter") onOpenBlock(b.name); }}
+                className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                 style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
                 <div
@@ -3340,15 +3474,18 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
                 >
                   <Library size={22} style={{ color: "#fff" }} />
                 </div>
-                <div>
-                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
-                    {b.name}
-                  </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                      {b.name}
+                    </span>
+                    <ShareButton label={`${year} · ${b.name}`} state={{ v: "block", p: program, y: year, b: b.name }} />
+                  </div>
                   <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                     <AccuracyBadge pct={b.accuracy} />
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -3374,7 +3511,19 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to blocks" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to blocks
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={`${year} · ${block}`} state={{ v: "block", p: program, y: year, b: block }} />
+          </div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {year} · {block}
         </h1>
@@ -3390,11 +3539,18 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {subjects.map((s) => {
               const Icon = subjectIcon(s.name);
+              const hasTree = mbbsWalk(block, s.name, []).length > 0;
+              const shareState = hasTree
+                ? { v: "mbbs-topic", p: program, y: year, b: block, s: s.name, mp: [] }
+                : { v: "subject", p: program, y: year, b: block, s: s.name };
               return (
-                <button
+                <div
                   key={s.name}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onOpenSubject(s.name)}
-                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5"
+                  onKeyDown={(e) => { if (e.key === "Enter") onOpenSubject(s.name); }}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -3403,15 +3559,18 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
                   >
                     <Icon size={22} style={{ color: "#fff" }} />
                   </div>
-                  <div>
-                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
-                      {s.name}
-                    </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
+                        {s.name}
+                      </span>
+                      <ShareButton label={s.name} state={shareState} />
+                    </div>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                       <AccuracyBadge pct={s.accuracy} />
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -3436,7 +3595,19 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to subjects
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={subject} state={{ v: "topic", p: program, s: subject }} />
+          </div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {subject}
         </h1>
@@ -3451,10 +3622,13 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {topics.map((t) => (
-              <button
+              <div
                 key={t.name}
+                role="button"
+                tabIndex={0}
                 onClick={() => onOpenTopic(t.name)}
-                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
+                onKeyDown={(e) => { if (e.key === "Enter") onOpenTopic(t.name); }}
+                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                 style={{ background: T.card, border: `1px solid ${T.line}` }}
               >
                 <div className="flex items-center gap-3 min-w-0">
@@ -3466,10 +3640,11 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
                   </div>
                   <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.name}</span>
                 </div>
-                <span className="text-xs shrink-0 flex flex-col items-end gap-1" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                   <AccuracyBadge pct={t.accuracy} />
+                  <ShareButton label={`${subject} — ${t.name}`} state={{ v: "subject", p: program, s: subject, t: t.name }} />
                 </span>
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -3505,7 +3680,19 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={title} state={{ v: "mbbs-topic", p: program, y: year, b: block, s: subject, mp: path }} />
+          </div>
+        </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
           {crumb}
         </div>
@@ -3522,27 +3709,36 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {rows.map((r) => (
-              <button
-                key={r.name}
-                onClick={() => onOpenItem(r.item)}
-                className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5"
-                style={{ background: T.card, border: `1px solid ${T.line}` }}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className="flex items-center justify-center shrink-0"
-                    style={{ width: 36, height: 36, background: colorForName(r.name), borderRadius: "50%" }}
-                  >
-                    {r.isFolder ? <Library size={16} style={{ color: "#fff" }} /> : <ClipboardList size={16} style={{ color: "#fff" }} />}
+            {rows.map((r) => {
+              const shareState = r.isFolder
+                ? { v: "mbbs-topic", p: program, y: year, b: block, s: subject, mp: [...path, r.name] }
+                : { v: "subject", p: program, y: year, b: block, s: subject, t: r.item };
+              return (
+                <div
+                  key={r.name}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onOpenItem(r.item)}
+                  onKeyDown={(e) => { if (e.key === "Enter") onOpenItem(r.item); }}
+                  className="text-left p-4 flex items-center justify-between gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className="flex items-center justify-center shrink-0"
+                      style={{ width: 36, height: 36, background: colorForName(r.name), borderRadius: "50%" }}
+                    >
+                      {r.isFolder ? <Library size={16} style={{ color: "#fff" }} /> : <ClipboardList size={16} style={{ color: "#fff" }} />}
+                    </div>
+                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</span>
                   </div>
-                  <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</span>
+                  <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {r.isFolder && <ChevronRight size={14} />}
+                    <ShareButton label={r.name} state={shareState} />
+                  </span>
                 </div>
-                <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                  {r.isFolder && <ChevronRight size={14} />}
-                </span>
-              </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -3573,7 +3769,22 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to Past Papers" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to Past Papers
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton
+              label={`${progInfo ? progInfo.label : program} — Past Papers`}
+              state={{ v: "pastpaper-folders", p: program }}
+            />
+          </div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {progInfo ? progInfo.label : program} — Past Papers
         </h1>
@@ -3591,12 +3802,18 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
               const isNested = typeof f !== "string";
               const name = isNested ? f.name : f;
               const n = counts[name] || 0;
+              const shareState = isNested
+                ? { v: "pastpaper-subfolders", p: program, ppName: name }
+                : { v: "pastpaper-setup", p: program, pf: name };
               return (
-                <button
+                <div
                   key={name}
-                  disabled={n === 0}
-                  onClick={() => (isNested ? onOpenSubfolders(f) : onOpenFolder(name))}
-                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+                  role="button"
+                  tabIndex={n === 0 ? -1 : 0}
+                  aria-disabled={n === 0}
+                  onClick={() => { if (n !== 0) (isNested ? onOpenSubfolders(f) : onOpenFolder(name)); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && n !== 0) (isNested ? onOpenSubfolders(f) : onOpenFolder(name)); }}
+                  className={`text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 ${n === 0 ? "opacity-40" : "cursor-pointer"}`}
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -3606,14 +3823,17 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
                     {isNested ? <Library size={20} style={{ color: "#fff" }} /> : <FileText size={20} style={{ color: "#fff" }} />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
-                        {name}
-                      </span>
-                      {isNested && <ChevronRight size={16} style={{ color: T.inkSoft }} />}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
+                          {name}
+                        </span>
+                        {isNested && <ChevronRight size={16} style={{ color: T.inkSoft }} />}
+                      </div>
+                      <ShareButton label={name} state={shareState} />
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -3639,7 +3859,19 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-5xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to folders" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to folders
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={parent?.name} state={{ v: "pastpaper-subfolders", p: program, ppName: parent?.name }} />
+          </div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {parent?.name}
         </h1>
@@ -3656,11 +3888,14 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
             {subfolders.map((f) => {
               const n = counts[f] || 0;
               return (
-                <button
+                <div
                   key={f}
-                  disabled={n === 0}
-                  onClick={() => onOpenFolder(f)}
-                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+                  role="button"
+                  tabIndex={n === 0 ? -1 : 0}
+                  aria-disabled={n === 0}
+                  onClick={() => { if (n !== 0) onOpenFolder(f); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && n !== 0) onOpenFolder(f); }}
+                  className={`text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 ${n === 0 ? "opacity-40" : "cursor-pointer"}`}
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -3669,12 +3904,13 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
                   >
                     <FileText size={20} style={{ color: "#fff" }} />
                   </div>
-                  <div>
+                  <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
                       {f}
                     </span>
+                    <ShareButton label={f} state={{ v: "pastpaper-setup", p: program, pf: f }} />
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -3698,7 +3934,19 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to folders" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to folders
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={folder} state={{ v: "pastpaper-setup", p: program, pf: folder }} />
+          </div>
+        </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
           {program} · Past Paper
         </div>
@@ -3784,7 +4032,19 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <BackHomeBar onBack={onBack} backLabel="Back to subjects" onHome={onHome} />
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+            <ArrowLeft size={16} /> Back to subjects
+          </button>
+          <div className="flex items-center gap-3">
+            {onHome && (
+              <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+                <HomeIcon size={16} /> Home
+              </button>
+            )}
+            <ShareButton label={topic ? `${subject} — ${topic}` : subject} state={{ v: "subject", p: program, y: year, b: block, s: subject, t: topic }} />
+          </div>
+        </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
           {program}
         </div>
@@ -6216,8 +6476,17 @@ export default function App() {
           // Real bank, loaded successfully.
           b = loaded;
           lastKnownBankLength = b.length;
-          saveLocalBankCache(b);
-          if (remoteVersion !== null) saveLocalBankVersion(remoteVersion);
+          const cacheSaved = saveLocalBankCache(b);
+          if (remoteVersion !== null && cacheSaved) {
+            saveLocalBankVersion(remoteVersion);
+          } else {
+            // Either we don't know the remote version, or this device's
+            // browser storage couldn't fit the full bank (silently failed).
+            // Never record a version in that case — otherwise next time we'd
+            // wrongly trust a stale/incomplete local cache and hide real
+            // content (e.g. newly added past-paper folders) from the user.
+            clearLocalBankVersion();
+          }
         } else if (loaded === false) {
           // The fetch itself failed — do NOT seed or touch Supabase. Fall back to
           // whatever was last cached on this device so the app doesn't look empty.
@@ -6380,6 +6649,47 @@ export default function App() {
     setQuizMeta({ label: pastPaperFolder, timeLimit: opts.timeLimit || null, mode: "pastpaper" });
     setView("quiz");
   };
+
+  // ---- Deep link restore: when a friend opens a shared "?share=..." link,
+  // jump them straight to that same chapter/topic/folder instead of Home.
+  // Runs once the question bank + user session are ready, then cleans the
+  // URL so navigating further inside the app doesn't keep the old link.
+  const sharedLinkHandled = useRef(false);
+  useEffect(() => {
+    if (loading || sharedLinkHandled.current) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("share");
+    if (!code) return;
+    const s = decodeShareState(code);
+    sharedLinkHandled.current = true;
+    // Remove the share param from the address bar so it doesn't re-trigger.
+    params.delete("share");
+    const clean = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (clean ? `?${clean}` : ""));
+    if (!s || !s.v) return;
+    if (userCourse && s.p && s.p !== userCourse) return; // student's course doesn't match the shared program
+    if (s.p) setProgram(s.p);
+    if ("y" in s) setYear(s.y || null);
+    if ("b" in s) setBlock(s.b || null);
+    if ("s" in s) setSubject(s.s || null);
+    if ("t" in s) setTopic(s.t || null);
+    if (s.v === "mbbs-topic") setMbbsPath(Array.isArray(s.mp) ? s.mp : []);
+    else setMbbsPath([]);
+    if (s.v === "pastpaper-subfolders") {
+      const folders = PAST_PAPER_FOLDERS[s.p] || [];
+      const found = folders.find((f) => typeof f !== "string" && f.name === s.ppName) || null;
+      setPastPaperParent(found);
+      setPastPaperFolder(null);
+    } else if (s.v === "pastpaper-setup") {
+      setPastPaperFolder(s.pf || null);
+      setPastPaperParent(null);
+    } else if (s.v === "pastpaper-folders") {
+      setPastPaperFolder(null);
+      setPastPaperParent(null);
+    }
+    setView(s.v);
+  }, [loading, userCourse]);
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
   // Deterministic shuffle so everyone gets the same "random" order for a given day.
