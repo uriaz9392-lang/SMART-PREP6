@@ -99,25 +99,74 @@ export function saveLocalStats(stats) {
 // Supabase fetch ever fails (network hiccup, timeout, etc.), the app falls back
 // to this cache instead of assuming "no data" and seeding demo questions over
 // the real bank. This is a safety net, not a substitute for the real database.
-function loadLocalBankCache() {
+//
+// Uses IndexedDB rather than localStorage. localStorage typically caps out around
+// 5-10MB per site, which is too small to hold an 8000+ question bank — every save
+// was silently failing, so the app was re-downloading the full bank on every open
+// anyway (defeating the whole point of caching). IndexedDB's quota is tied to
+// available device storage (usually hundreds of MB or more), so the cache can
+// actually hold the full bank.
+const BANK_DB_NAME = "smart-prep-bank-db";
+const BANK_STORE_NAME = "bank";
+const BANK_KEY = "bank-cache";
+
+function openBankDB() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("IndexedDB not supported in this browser"));
+      return;
+    }
+    const req = indexedDB.open(BANK_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(BANK_STORE_NAME)) {
+        req.result.createObjectStore(BANK_STORE_NAME);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadLocalBankCache() {
   try {
-    const raw = localStorage.getItem("mdcat-bank-cache");
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
+    const db = await openBankDB();
+    const result = await new Promise((resolve, reject) => {
+      const tx = db.transaction(BANK_STORE_NAME, "readonly");
+      const req = tx.objectStore(BANK_STORE_NAME).get(BANK_KEY);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return Array.isArray(result) && result.length > 0 ? result : null;
+  } catch (e) {
+    // Fall back to any older localStorage cache from before this change,
+    // so devices don't lose their cache benefit on the first load after update.
+    try {
+      const raw = localStorage.getItem("mdcat-bank-cache");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
   }
 }
-function saveLocalBankCache(bank) {
+
+async function saveLocalBankCache(bank) {
+  if (!Array.isArray(bank) || bank.length === 0) return false;
   try {
-    if (Array.isArray(bank) && bank.length > 0) {
-      localStorage.setItem("mdcat-bank-cache", JSON.stringify(bank));
-      return true;
-    }
-    return false;
-  } catch {
-    // Most likely the bank is too large for this browser's localStorage quota.
-    // Returning false tells the caller NOT to trust/record a cache version,
-    // so we never silently keep serving a stale, incomplete cached bank.
+    const db = await openBankDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(BANK_STORE_NAME, "readwrite");
+      tx.objectStore(BANK_STORE_NAME).put(bank, BANK_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    // Clean up any old, now-unused localStorage copy so it doesn't sit around
+    // taking up quota needed for other things.
+    try {
+      localStorage.removeItem("mdcat-bank-cache");
+    } catch {}
+    return true;
+  } catch (e) {
+    console.error("IndexedDB bank cache save failed (falling back — bandwidth caching won't apply on this device):", e);
     return false;
   }
 }
@@ -1322,7 +1371,7 @@ async function saveBank(bank, opts = {}) {
   const ok = await saveSharedData({ bank });
   if (ok) {
     lastKnownBankLength = newLen;
-    const cacheSaved = saveLocalBankCache(bank);
+    const cacheSaved = await saveLocalBankCache(bank);
     // Bump bank_version so every student's app knows to re-download the fresh
     // bank next time it opens, instead of everyone re-downloading on every open.
     // This part always runs, regardless of whether OUR OWN local cache below
@@ -5342,7 +5391,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       const { error } = await supabase.rpc("delete_mcq", { question_id: id });
       if (error) throw error;
       lastKnownBankLength = next.length;
-      const cacheSaved = saveLocalBankCache(next);
+      const cacheSaved = await saveLocalBankCache(next);
       try {
         const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
         const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
@@ -5375,7 +5424,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       const { error } = await supabase.rpc("delete_mcqs", { question_ids: idsToRemove });
       if (error) throw error;
       lastKnownBankLength = next.length;
-      const cacheSaved = saveLocalBankCache(next);
+      const cacheSaved = await saveLocalBankCache(next);
       try {
         const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
         const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
@@ -6516,7 +6565,7 @@ export default function App() {
       // what cuts down repeated egress across many students opening the app.
       const remoteVersion = await loadBankVersion();
       const localVersion = loadLocalBankVersion();
-      const cachedBank = loadLocalBankCache();
+      const cachedBank = await loadLocalBankCache();
       let b;
       // Remember the freshest version number this tab has seen, regardless of
       // which branch below actually runs — saveBank() uses it later to detect
@@ -6532,7 +6581,7 @@ export default function App() {
           // Real bank, loaded successfully.
           b = loaded;
           lastKnownBankLength = b.length;
-          const cacheSaved = saveLocalBankCache(b);
+          const cacheSaved = await saveLocalBankCache(b);
           if (remoteVersion !== null && cacheSaved) {
             saveLocalBankVersion(remoteVersion);
           } else {
