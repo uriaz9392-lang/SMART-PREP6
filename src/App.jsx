@@ -21,6 +21,14 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://ehkrddewmmilogbojvkh.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 
+// Cloudflare Worker that serves the (large, mostly-static) question bank and
+// the (small, periodically-refreshed) leaderboard from a free, high-bandwidth
+// CDN instead of Supabase — this is what keeps Supabase egress low even as
+// more students use the app. Supabase's app_data.bank stays the source of
+// truth; the Worker is only pushed a fresh copy whenever the admin saves.
+const CDN_BASE = "https://smart-prep-worker.uriaz9392.workers.dev";
+const CDN_ADMIN_KEY = "THpKGBzsM4dtsa9ruyvmlxbD6AzPfMwB-ZOawZmHSqY";
+
 // Use localStorage (instead of sessionStorage) to keep the login session.
 // This ties "being logged in" to the device/browser itself, not to a single
 // open-app session:
@@ -588,21 +596,32 @@ export async function saveUserStats(userId, stats) {
 }
 
 // ---- Leaderboard (reads every student's aggregate stats) ----
-// Requires a `name` text column and a `slow_ids` jsonb column (default []) on `user_stats`,
-// plus a Supabase RLS policy that allows SELECT on user_stats to any signed-in user
-// (by default a student can usually only read their own row).
+// Reads from the Cloudflare Worker's cached copy (refreshed every 5 minutes
+// by a Cron Trigger there) instead of querying Supabase directly on every
+// app open — this is what keeps leaderboard reads free/cheap. Saving a
+// student's own stats is completely unchanged and still goes to Supabase
+// directly (see saveUserStats), so progress is never delayed or at risk.
 export async function loadLeaderboard(limit = 50) {
   try {
-    const { data, error } = await supabase
-      .from("user_stats")
-      .select("name, total_attempted, total_correct")
-      .order("total_correct", { ascending: false })
-      .limit(limit);
-    if (error) throw error;
-    return (data || []).filter((r) => r.name && r.name.trim());
+    const res = await fetch(`${CDN_BASE}/leaderboard`);
+    if (!res.ok) throw new Error("CDN leaderboard fetch failed: " + res.status);
+    const data = await res.json();
+    return (Array.isArray(data) ? data : []).slice(0, limit);
   } catch (e) {
-    console.error("Load leaderboard failed (check RLS policy + columns on user_stats):", e);
-    return [];
+    console.error("CDN leaderboard failed, falling back to Supabase:", e);
+    // Fallback so the leaderboard still works even if the Worker is briefly down.
+    try {
+      const { data, error } = await supabase
+        .from("user_stats")
+        .select("name, total_attempted, total_correct")
+        .order("total_correct", { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      return (data || []).filter((r) => r.name && r.name.trim());
+    } catch (e2) {
+      console.error("Supabase leaderboard fallback also failed:", e2);
+      return [];
+    }
   }
 }
 
@@ -1282,6 +1301,19 @@ const SEED_MCQS = [
 // so a single dropped request could make the app think the bank was empty and silently
 // overwrite the real question bank with 8 demo questions.
 async function loadBank() {
+  // Try the Cloudflare CDN first (free, fast bandwidth). Only trust it if it
+  // actually has data — an empty [] there just means nothing has been synced
+  // to the CDN yet, in which case we fall through to Supabase (the real
+  // source of truth) instead of wrongly treating it as "no bank exists".
+  try {
+    const res = await fetch(`${CDN_BASE}/bank`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) return data;
+    }
+  } catch (e) {
+    console.error("CDN bank fetch failed, falling back to Supabase:", e);
+  }
   try {
     const { data, error } = await supabase.from("app_data").select("bank").eq("id", 1).maybeSingle();
     if (error) throw error;
@@ -1298,6 +1330,15 @@ async function loadBank() {
 // (a handful of bytes) instead of re-downloading the entire multi-MB bank on
 // every single app open, which was the main driver of Supabase egress usage.
 async function loadBankVersion() {
+  try {
+    const res = await fetch(`${CDN_BASE}/bank-version`);
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data.version === "number") return data.version;
+    }
+  } catch (e) {
+    console.error("CDN bank-version fetch failed, falling back to Supabase:", e);
+  }
   try {
     const { data, error } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
     if (error) throw error;
@@ -1340,6 +1381,29 @@ let lastKnownBankLength = null;
 // silently "resurrect" MCQs that were just deleted in the other tab.
 let lastKnownBankVersion = null;
 
+// Pushes the given bank to the Cloudflare CDN Worker. Used after every
+// Supabase write (add/edit/delete) so the CDN copy that students actually
+// read from stays in sync. Supabase remains the real save in all cases —
+// this only affects how fast the CDN catches up, never data safety.
+async function pushBankToCdn(bank) {
+  try {
+    const cdnRes = await fetch(`${CDN_BASE}/bank`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-admin-key": CDN_ADMIN_KEY },
+      body: JSON.stringify(bank),
+    });
+    if (cdnRes.ok) {
+      const cdnData = await cdnRes.json();
+      return typeof cdnData.version === "number" ? cdnData.version : null;
+    }
+    console.error("CDN bank push failed with status:", cdnRes.status);
+    return null;
+  } catch (e) {
+    console.error("CDN bank push failed:", e);
+    return null;
+  }
+}
+
 async function saveBank(bank, opts = {}) {
   const newLen = Array.isArray(bank) ? bank.length : 0;
   if (!opts.force && lastKnownBankLength !== null && lastKnownBankLength >= 10 && newLen < lastKnownBankLength * 0.5) {
@@ -1351,10 +1415,11 @@ async function saveBank(bank, opts = {}) {
     return "blocked";
   }
   // Concurrency check: has someone else (another tab/device) saved since we last loaded?
+  // Uses the same source (loadBankVersion, which prefers the CDN) that the rest of the
+  // app uses, so this comparison is always against the same version numbering.
   if (!opts.force && lastKnownBankVersion !== null) {
     try {
-      const { data: vCheck } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
-      const currentRemoteVersion = vCheck && typeof vCheck.bank_version === "number" ? vCheck.bank_version : null;
+      const currentRemoteVersion = await loadBankVersion();
       if (currentRemoteVersion !== null && currentRemoteVersion !== lastKnownBankVersion) {
         alert(
           "This question bank was changed elsewhere (another tab or device) since this screen loaded your copy. " +
@@ -1380,7 +1445,6 @@ async function saveBank(bank, opts = {}) {
       const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
       const nextVersion = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
       await supabase.from("app_data").update({ bank_version: nextVersion }).eq("id", 1);
-      lastKnownBankVersion = nextVersion;
       // Only record this version as "ours" if our own local cache actually
       // saved successfully — otherwise this same device would wrongly trust
       // its own stale/incomplete cache next time it opens the app.
@@ -1392,6 +1456,13 @@ async function saveBank(bank, opts = {}) {
     } catch (e) {
       console.error("Could not bump bank_version (bank still saved fine):", e);
     }
+    // Push the fresh bank up to the Cloudflare CDN so every student's app can
+    // keep reading it from there (free bandwidth) instead of from Supabase.
+    // Supabase above is still the real save — if this CDN push fails, the
+    // data is NOT lost, students just keep serving the previous CDN copy
+    // until the next successful save retries this.
+    const cdnVersion = await pushBankToCdn(bank);
+    if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
   }
   return ok;
 }
@@ -5392,13 +5463,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      try {
-        const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
-        const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
-        lastKnownBankVersion = v;
-        if (v !== null && cacheSaved) saveLocalBankVersion(v);
+      const cdnVersion = await pushBankToCdn(next);
+      if (cdnVersion !== null) {
+        lastKnownBankVersion = cdnVersion;
+        if (cacheSaved) saveLocalBankVersion(cdnVersion);
         else clearLocalBankVersion();
-      } catch {}
+      }
     } catch (e) {
       console.error("Delete failed:", e);
       setBank(prev);
@@ -5409,6 +5479,27 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   // Deletes every question currently matching the search/program filters in one go
   // (e.g. filter to "Chemistry" and wipe the whole subject instead of deleting one by one).
   // Also atomic on the database side via delete_mcqs() — same permanence guarantee.
+  // One-time (or anytime) manual sync — pushes whatever is currently loaded
+  // from Supabase up to the Cloudflare CDN. Useful right after connecting the
+  // CDN for the first time, so students start getting the existing bank from
+  // there immediately instead of waiting for the next add/edit/delete.
+  const [cdnSyncing, setCdnSyncing] = useState(false);
+  const syncToCdn = async () => {
+    setCdnSyncing(true);
+    try {
+      const cdnVersion = await pushBankToCdn(bank);
+      if (cdnVersion !== null) {
+        lastKnownBankVersion = cdnVersion;
+        lastKnownBankLength = bank.length;
+        alert(`Synced ${bank.length} question(s) to the CDN.`);
+      } else {
+        alert("CDN sync failed — check your internet connection and try again.");
+      }
+    } finally {
+      setCdnSyncing(false);
+    }
+  };
+
   const bulkDeleteFiltered = async () => {
     if (filtered.length === 0) return;
     const ok1 = window.confirm(
@@ -5425,13 +5516,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      try {
-        const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
-        const v = data && typeof data.bank_version === "number" ? data.bank_version : null;
-        lastKnownBankVersion = v;
-        if (v !== null && cacheSaved) saveLocalBankVersion(v);
+      const cdnVersion = await pushBankToCdn(next);
+      if (cdnVersion !== null) {
+        lastKnownBankVersion = cdnVersion;
+        if (cacheSaved) saveLocalBankVersion(cdnVersion);
         else clearLocalBankVersion();
-      } catch {}
+      }
       alert(`${idsToRemove.length} question(s) deleted.`);
     } catch (e) {
       console.error("Bulk delete failed:", e);
@@ -5555,6 +5645,15 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               </select>
               <button onClick={startAdd} className="ml-auto flex items-center gap-1 px-4 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
                 <Plus size={16} /> Add MCQ
+              </button>
+              <button
+                onClick={syncToCdn}
+                disabled={cdnSyncing}
+                className="flex items-center gap-1 px-4 py-2 text-sm disabled:opacity-40"
+                style={{ border: `1px solid ${T.ink}`, color: T.ink }}
+                title="Push the currently loaded question bank to the Cloudflare CDN right now"
+              >
+                {cdnSyncing ? "Syncing…" : "Sync to CDN"}
               </button>
               <button
                 onClick={bulkDeleteFiltered}
