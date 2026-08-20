@@ -8,7 +8,7 @@ import {
   Home as HomeIcon, Library, Users, FlaskRound, Award, Mail, StickyNote,
   BellRing, ChevronDown, Phone, MessageCircle, Medal, Star, KeyRound,
   Instagram, Facebook, Music2, Brain, FileCheck2, Clock, Smartphone,
-  Timer, Activity, Share2,
+  Timer, Activity, Share2, Sun, Moon, Send, AlertTriangle,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
@@ -28,6 +28,12 @@ const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 // truth; the Worker is only pushed a fresh copy whenever the admin saves.
 const CDN_BASE = "https://smart-prep-worker.uriaz9392.workers.dev";
 const CDN_ADMIN_KEY = "THpKGBzsM4dtsa9ruyvmlxbD6AzPfMwB-ZOawZmHSqY";
+// Public VAPID key for Web Push — this one is MEANT to be public (it's the
+// "public" half of the key pair; the private half stays a secret on the
+// Cloudflare Worker only). Fill this in with the key from `npx web-push
+// generate-vapid-keys` — see SETUP.md. Push notifications quietly no-op
+// until this is set.
+const VAPID_PUBLIC_KEY = "";
 
 // Use localStorage (instead of sessionStorage) to keep the login session.
 // This ties "being logged in" to the device/browser itself, not to a single
@@ -652,6 +658,66 @@ export async function saveExamDates(examDates) {
   }
 }
 
+// ---- Daily push-reminder settings (admin-configured; the Cloudflare Worker's ----
+// ---- cron trigger reads this same row to know whether/when/what to send)    ----
+// Requires a `daily_reminder` jsonb column on the `app_data` table (default value
+// {"enabled": false, "time": "18:00", "message": ""}).
+const DEFAULT_DAILY_REMINDER = { enabled: false, time: "18:00", message: "Don't break your streak — today's questions are waiting!" };
+export async function loadDailyReminder() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("daily_reminder").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return { ...DEFAULT_DAILY_REMINDER, ...((data && data.daily_reminder) || {}) };
+  } catch (e) {
+    console.error("Load daily reminder failed (add a 'daily_reminder' jsonb column to app_data):", e);
+    return DEFAULT_DAILY_REMINDER;
+  }
+}
+export async function saveDailyReminder(dailyReminder) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ daily_reminder: dailyReminder }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, daily_reminder: dailyReminder });
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (e) {
+    console.error("Save daily reminder failed (add a 'daily_reminder' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
+// ---- Push notifications (admin broadcast) ----
+// Sent through the Cloudflare Worker (same one that serves the bank CDN cache),
+// which holds the VAPID private key + Supabase service-role key as Worker
+// secrets — neither of those ever ships to the browser. See SETUP.md for the
+// small addition this needs on the Worker side.
+export async function sendPushBroadcast({ title, body }) {
+  try {
+    const res = await fetch(`${CDN_BASE}/send-push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-admin-key": CDN_ADMIN_KEY },
+      body: JSON.stringify({ title, body }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.error("Send push broadcast failed:", e);
+    return false;
+  }
+}
+export async function loadPushSubscriberCount() {
+  try {
+    const res = await fetch(`${CDN_BASE}/push-subscriber-count`, { headers: { "x-admin-key": CDN_ADMIN_KEY } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.count === "number" ? data.count : null;
+  } catch (e) {
+    console.error("Load push subscriber count failed:", e);
+    return null;
+  }
+}
+
 // ---- Usage analytics: installs + daily minutes used (for the Admin Dashboard) ----
 // Requires two new tables in Supabase (RLS disabled, same permissive setup `app_data`
 // already uses, since both are written directly from the client with the anon key):
@@ -729,7 +795,15 @@ const SOCIAL_LINKS = [
 ];
 
 // ---------- Design tokens ----------
-const T = {
+// ---------- Theme (Dark / Light) ----------
+// T is kept as a single mutable object (same reference everywhere in the file,
+// referenced as T.card, T.ink, etc. in hundreds of inline styles). To support a
+// dark/light toggle WITHOUT touching every single one of those call sites, we
+// keep two fixed palettes below and, on every render of the root App component,
+// copy the currently-selected palette's values onto T in place (Object.assign).
+// Since React re-renders the whole visible tree on the toggle's state change,
+// every T.xxx read picks up the new values automatically on that same render.
+const THEME_DARK = {
   paper: "#0B1E3D",
   paperDark: "#0F2748",
   card: "#12294D",
@@ -745,6 +819,24 @@ const T = {
   blue: "#2E63D6",
   blueSoft: "#DCE6FA",
 };
+const THEME_LIGHT = {
+  paper: "#F4F6FB",
+  paperDark: "#E7EBF5",
+  card: "#FFFFFF",
+  ink: "#0B1E3D",
+  inkSoft: "#5B6B8C",
+  line: "#DDE3EF",
+  emerald: "#1F7A5C",
+  emeraldSoft: "#DCEBE3",
+  rose: "#B8493F",
+  roseSoft: "#F3E1DD",
+  amber: "#9C6C1F",
+  amberSoft: "#F1E4CB",
+  blue: "#2E63D6",
+  blueSoft: "#DCE6FA",
+};
+const THEME_STORAGE_KEY = "mdcat-theme";
+const T = { ...THEME_DARK };
 
 // ---------- Programs ----------
 const PROGRAMS = [
@@ -1200,6 +1292,45 @@ function ShareButton({ label, state, size = 16, className = "" }) {
       style={{ color: T.inkSoft }}
     >
       <Share2 size={size} />
+    </button>
+  );
+}
+
+// Small delete-icon button, meant to sit right next to a ShareButton inside a
+// folder/topic card — ADMIN ONLY. Deletes every MCQ matching that folder's
+// scope (the `ids` array is computed by the caller using the exact same
+// filter each page already uses for its own question-count badge, so this
+// only ever removes the questions actually shown as belonging to that card).
+// Always confirms with the admin first and never renders for non-admins.
+function DeleteMcqsButton({ label, ids, onDelete, size = 16, className = "" }) {
+  const [busy, setBusy] = useState(false);
+  if (!ids || ids.length === 0) return null;
+  const handleClick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (busy) return;
+    const ok = window.confirm(
+      `Delete ALL ${ids.length} MCQ${ids.length === 1 ? "" : "s"} under "${label}"?\n\nThis cannot be undone.`
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await onDelete(ids);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={busy}
+      title={`Delete all MCQs under "${label}" (admin only)`}
+      aria-label={`Delete all MCQs under ${label}`}
+      className={`shrink-0 p-1.5 rounded-full transition-colors hover:opacity-70 disabled:opacity-40 ${className}`}
+      style={{ color: T.rose }}
+    >
+      <Trash2 size={size} />
     </button>
   );
 }
@@ -2718,34 +2849,85 @@ function ContactUsPage({ onBack, contactItems, isAdmin, onAddContact, onRemoveCo
 // Note: this only fires a notification while the app tab is open in a browser that
 // supports the Notification API — it isn't a true server-sent push notification
 // that can wake up a closed app, since that needs a push server + service worker.
-function NotificationPermissionRow() {
-  const supported = typeof window !== "undefined" && "Notification" in window;
-  const [permission, setPermission] = useState(supported ? Notification.permission : "unsupported");
+// Converts the VAPID public key (base64url string) into the Uint8Array format
+// the browser's PushManager API requires.
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+function NotificationPermissionRow({ userId, userCourse }) {
+  const pushSupported =
+    typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+  const [permission, setPermission] = useState(pushSupported ? Notification.permission : "unsupported");
+  const [busy, setBusy] = useState(false);
 
   const enable = async () => {
-    if (!supported) return;
-    const result = await Notification.requestPermission();
-    setPermission(result);
-    if (result === "granted") {
-      new Notification("Reminders enabled", { body: "We'll nudge you here when the Daily Challenge is waiting." });
+    if (!pushSupported || busy) return;
+    setBusy(true);
+    try {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      if (result !== "granted") return;
+
+      // Real Web Push: this keeps working even if the app/browser is fully
+      // closed, unlike a plain in-page Notification (which only fires while
+      // this tab is open).
+      if (!VAPID_PUBLIC_KEY) {
+        console.error("Push not configured: VAPID_PUBLIC_KEY is empty. See SETUP.md.");
+        alert("Push notifications aren't fully set up yet on the server side — ask the admin to finish the setup steps.");
+        return;
+      }
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+      const json = sub.toJSON();
+      const { error } = await supabase.from("push_subscriptions").upsert(
+        {
+          user_id: userId || null,
+          endpoint: json.endpoint,
+          p256dh: json.keys?.p256dh,
+          auth: json.keys?.auth,
+          course: userCourse || null,
+        },
+        { onConflict: "endpoint" }
+      );
+      if (error) throw error;
+    } catch (e) {
+      console.error("Enabling push notifications failed:", e);
+      alert("Couldn't enable phone notifications — check your internet connection and try again.");
+    } finally {
+      setBusy(false);
     }
   };
 
-  if (!supported) return null;
+  if (!pushSupported) return null;
 
   return (
     <div className="p-5 mb-4 flex items-center justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
       <div>
         <div className="text-sm flex items-center gap-2" style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
-          <BellRing size={14} /> Reminder notifications
+          <BellRing size={14} /> Push notifications
         </div>
         <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
-          {permission === "granted" ? "Enabled — works while the app is open." : "Get a nudge for the Daily Challenge while the app is open."}
+          {permission === "granted"
+            ? "Enabled — you'll get alerts, announcements & reminders even if the app is closed."
+            : "Get alerts, announcements & the daily reminder on your phone — even when the app is closed."}
         </div>
       </div>
       {permission !== "granted" && (
-        <button onClick={enable} className="text-xs px-3 py-1.5 shrink-0" style={{ background: T.ink, color: T.paper }}>
-          Enable
+        <button onClick={enable} disabled={busy} className="text-xs px-3 py-1.5 shrink-0 disabled:opacity-50" style={{ background: T.ink, color: T.paper }}>
+          {busy ? "Enabling…" : "Enable"}
         </button>
       )}
     </div>
@@ -2764,6 +2946,8 @@ function Home({
   onAddNote,
   examDates,
   onOpenPastPapers,
+  isDark, onToggleTheme,
+  userId,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -2775,9 +2959,13 @@ function Home({
     return c;
   }, [bank, programs]);
 
+  // WhatsApp community link for the student's own course only (admin sets one
+  // link per course under a "Community:<COURSE>" key in the same social-links
+  // map already used for the WhatsApp Group / Instagram / Facebook / TikTok cards).
+  const communityLink = userCourse ? (socialLinks && socialLinks[`Community:${userCourse}`]) || "" : "";
+
   // Exam countdown for the student's own course (admin sets the date; hidden once it's passed).
-  const daysToExam = useMemo(() => {
-    const dateStr = userCourse ? examDates?.[userCourse] : null;
+  const daysToExam = useMemo(() => {    const dateStr = userCourse ? examDates?.[userCourse] : null;
     if (!dateStr) return null;
     const examDay = new Date(dateStr + "T00:00:00");
     const today = new Date();
@@ -3172,7 +3360,15 @@ function Home({
               <Lock size={14} /> Admin sign-in
             </button>
           )}
-          <NotificationPermissionRow />
+          <button
+            onClick={onToggleTheme}
+            className="w-full flex items-center justify-between gap-2 px-4 py-3 text-sm mb-3"
+            style={{ border: `1px solid ${T.line}`, background: T.card }}
+          >
+            <span className="flex items-center gap-2">{isDark ? <Moon size={14} /> : <Sun size={14} />} Dark mode</span>
+            <span style={{ color: T.inkSoft }}>{isDark ? "On" : "Off"}</span>
+          </button>
+          <NotificationPermissionRow userId={userId} userCourse={userCourse} />
           <button
             onClick={onSignOut}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm"
@@ -3257,6 +3453,9 @@ function Home({
               <Menu size={22} color="#fff" />
             </button>
             <div className="flex items-center gap-4">
+              <button onClick={onToggleTheme} title={isDark ? "Switch to light mode" : "Switch to dark mode"}>
+                {isDark ? <Sun size={20} color="#fff" /> : <Moon size={20} color="#fff" />}
+              </button>
               <button onClick={() => setSearchOpen(true)}>
                 <Search size={20} color="#fff" />
               </button>
@@ -3388,6 +3587,19 @@ function Home({
             { label: "Your Progress", sub: "Track your learning", icon: TrendingUp, action: () => setNavTab("progress") },
             { label: "Weak Topics", sub: `${stats?.wrongIds?.length || 0} to review`, icon: RotateCcw, action: onReviewMistakes },
             { label: "Leaderboard", sub: topLeader ? `🏆 ${topLeader.name} · ${topLeaderAccuracy}%` : "Compete & be the best", icon: Trophy, action: onOpenLeaderboard, highlight: !!topLeader },
+            // Community shortcut: only shown to a student who has a course set, and only
+            // ever links to THAT course's community — never any other course's link.
+            ...(userCourse
+              ? [{
+                  label: "Community",
+                  sub: communityLink ? `Join ${userCourse} group` : "Coming soon",
+                  icon: Users,
+                  action: communityLink
+                    ? () => window.open(communityLink, "_blank", "noopener,noreferrer")
+                    : () => alert("The community link hasn't been added yet — check back soon."),
+                  highlight: !!communityLink,
+                }]
+              : []),
           ].map((q) => {
             const Icon = q.icon;
             return (
@@ -3460,7 +3672,7 @@ function BackHomeBar({ onBack, backLabel = "Back", onHome }) {
   );
 }
 
-function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, onHome }) {
+function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, onHome, isAdmin, onDeleteMcqs }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
   const isMDCAT = TOPIC_PROGRAMS.includes(program);
@@ -3468,20 +3680,20 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
 
   const groups = useMemo(() => {
     if (isMBBS) {
-      return Object.keys(MBBS_STRUCTURE).map((name) => ({
-        name,
-        count: progQuestions.filter((q) => (q.year || "") === name).length,
+      return Object.keys(MBBS_STRUCTURE).map((name) => {
+        const qs = progQuestions.filter((q) => (q.year || "") === name);
+        return { name, count: qs.length, ids: qs.map((q) => q.id),
         // MBBS stats keys look like "Year | Block | Subject" — match on the year prefix.
-        accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${name} | `)),
-      }));
+        accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${name} | `)) };
+      });
     }
     if (isMDCAT) {
-      return Object.keys(MDCAT_TOPICS).map((name) => ({
-        name,
-        count: progQuestions.filter((q) => q.subject === name).length,
+      return Object.keys(MDCAT_TOPICS).map((name) => {
+        const qs = progQuestions.filter((q) => q.subject === name);
+        return { name, count: qs.length, ids: qs.map((q) => q.id),
         // Topic-program stats keys look like "Subject - Topic" — match on the subject prefix.
-        accuracy: accuracyFor(bySubject, (key) => key === name || key.startsWith(`${name} - `)),
-      }));
+        accuracy: accuracyFor(bySubject, (key) => key === name || key.startsWith(`${name} - `)) };
+      });
     }
     const map = {};
     progQuestions.forEach((q) => {
@@ -3490,6 +3702,7 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
     return Object.keys(map).sort().map((name) => ({
       name,
       count: map[name],
+      ids: progQuestions.filter((q) => q.subject === name).map((q) => q.id),
       accuracy: accuracyFor(bySubject, (key) => key === name),
     }));
   }, [progQuestions, isMBBS, isMDCAT, bySubject]);
@@ -3504,7 +3717,10 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
           <button onClick={onBack} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
             <ArrowLeft size={16} /> Back to programs
           </button>
-          <ShareButton label={progInfo ? progInfo.label : program} state={{ v: "program", p: program }} />
+          <div className="flex items-center gap-1">
+            <ShareButton label={progInfo ? progInfo.label : program} state={{ v: "program", p: program }} />
+            {isAdmin && <DeleteMcqsButton label={progInfo ? progInfo.label : program} ids={progQuestions.map((q) => q.id)} onDelete={onDeleteMcqs} />}
+          </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {progInfo ? progInfo.label : program}
@@ -3548,7 +3764,10 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
                       <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
                         {s.name}
                       </span>
-                      <ShareButton label={s.name} state={shareState} />
+                      <div className="flex items-center gap-1 shrink-0">
+                        <ShareButton label={s.name} state={shareState} />
+                        {isAdmin && <DeleteMcqsButton label={s.name} ids={s.ids} onDelete={onDeleteMcqs} />}
+                      </div>
                     </div>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                       <AccuracyBadge pct={s.accuracy} />
@@ -3565,15 +3784,15 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
+function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome, isAdmin, onDeleteMcqs }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
   const bySubject = stats?.bySubject || {};
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
-  const blocks = blockNames.map((name) => ({
-    name,
-    count: yearQuestions.filter((q) => (q.block || "") === name).length,
-    accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${year} | ${name} | `)),
-  }));
+  const blocks = blockNames.map((name) => {
+    const qs = yearQuestions.filter((q) => (q.block || "") === name);
+    return { name, count: qs.length, ids: qs.map((q) => q.id),
+    accuracy: accuracyFor(bySubject, (key) => key.startsWith(`${year} | ${name} | `)) };
+  });
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -3590,6 +3809,7 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
               </button>
             )}
             <ShareButton label={year} state={{ v: "year", p: program, y: year }} />
+            {isAdmin && <DeleteMcqsButton label={year} ids={yearQuestions.map((q) => q.id)} onDelete={onDeleteMcqs} />}
           </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
@@ -3627,6 +3847,7 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
                       {b.name}
                     </span>
                     <ShareButton label={`${year} · ${b.name}`} state={{ v: "block", p: program, y: year, b: b.name }} />
+                    {isAdmin && <DeleteMcqsButton label={`${year} · ${b.name}`} ids={b.ids} onDelete={onDeleteMcqs} />}
                   </div>
                   <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                     <AccuracyBadge pct={b.accuracy} />
@@ -3642,17 +3863,17 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome }) {
 }
 
 // ---------- MBBS Block page (lists fixed subjects within a chosen block) ----------
-function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, onHome }) {
+function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, onHome, isAdmin, onDeleteMcqs }) {
   const blockQuestions = bank.filter(
     (q) => q.program === program && (q.year || "") === year && (q.block || "") === block
   );
   const bySubject = stats?.bySubject || {};
   const subjectNames = (MBBS_STRUCTURE[year] && MBBS_STRUCTURE[year][block]) || [];
-  const subjects = subjectNames.map((name) => ({
-    name,
-    count: blockQuestions.filter((q) => q.subject === name).length,
-    accuracy: accuracyFor(bySubject, (key) => key === `${year} | ${block} | ${name}`),
-  }));
+  const subjects = subjectNames.map((name) => {
+    const qs = blockQuestions.filter((q) => q.subject === name);
+    return { name, count: qs.length, ids: qs.map((q) => q.id),
+    accuracy: accuracyFor(bySubject, (key) => key === `${year} | ${block} | ${name}`) };
+  });
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -3669,6 +3890,7 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
               </button>
             )}
             <ShareButton label={`${year} · ${block}`} state={{ v: "block", p: program, y: year, b: block }} />
+            {isAdmin && <DeleteMcqsButton label={`${year} · ${block}`} ids={blockQuestions.map((q) => q.id)} onDelete={onDeleteMcqs} />}
           </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
@@ -3711,7 +3933,10 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
                       <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">
                         {s.name}
                       </span>
-                      <ShareButton label={s.name} state={shareState} />
+                      <div className="flex items-center gap-1 shrink-0">
+                        <ShareButton label={s.name} state={shareState} />
+                        {isAdmin && <DeleteMcqsButton label={s.name} ids={s.ids} onDelete={onDeleteMcqs} />}
+                      </div>
                     </div>
                     <div className="text-sm mt-1 flex items-center gap-2 flex-wrap" style={{ color: T.inkSoft }}>
                       <AccuracyBadge pct={s.accuracy} />
@@ -3728,15 +3953,15 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
 }
 
 // ---------- MDCAT Topic page (lists fixed topics within a chosen subject) ----------
-function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome }) {
+function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome, isAdmin, onDeleteMcqs }) {
   const subjQuestions = bank.filter((q) => q.program === program && q.subject === subject);
   const bySubject = stats?.bySubject || {};
   const topicNames = MDCAT_TOPICS[subject] || [];
-  const topics = topicNames.map((name) => ({
-    name,
-    count: subjQuestions.filter((q) => q.topic === name).length,
-    accuracy: accuracyFor(bySubject, (key) => key === `${subject} - ${name}`),
-  }));
+  const topics = topicNames.map((name) => {
+    const qs = subjQuestions.filter((q) => q.topic === name);
+    return { name, count: qs.length, ids: qs.map((q) => q.id),
+    accuracy: accuracyFor(bySubject, (key) => key === `${subject} - ${name}`) };
+  });
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -3753,6 +3978,7 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
               </button>
             )}
             <ShareButton label={subject} state={{ v: "topic", p: program, s: subject }} />
+            {isAdmin && <DeleteMcqsButton label={subject} ids={subjQuestions.map((q) => q.id)} onDelete={onDeleteMcqs} />}
           </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
@@ -3790,6 +4016,7 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
                 <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                   <AccuracyBadge pct={t.accuracy} />
                   <ShareButton label={`${subject} — ${t.name}`} state={{ v: "subject", p: program, s: subject, t: t.name }} />
+                  {isAdmin && <DeleteMcqsButton label={`${subject} — ${t.name}`} ids={t.ids} onDelete={onDeleteMcqs} />}
                 </span>
               </div>
             ))}
@@ -3804,7 +4031,7 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome 
 // Renders whatever level of the MBBS_TOPICS tree `items` represents. Folder items
 // drill deeper (handled by the caller pushing onto the path); leaf items go
 // straight to quiz setup.
-function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBack, onOpenItem, onHome }) {
+function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBack, onOpenItem, onHome, isAdmin, onDeleteMcqs }) {
   const scoped = bank.filter(
     (q) =>
       q.program === program &&
@@ -3816,8 +4043,8 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
     const isFolder = typeof item !== "string";
     const name = isFolder ? item.name : item;
     const leaves = mbbsLeafNames(item);
-    const count = scoped.filter((q) => leaves.includes(q.topic)).length;
-    return { item, name, isFolder, count };
+    const matched = scoped.filter((q) => leaves.includes(q.topic));
+    return { item, name, isFolder, count: matched.length, ids: matched.map((q) => q.id) };
   });
   const crumb = [subject, ...path].join(" › ");
   const title = path.length ? path[path.length - 1] : subject;
@@ -3838,6 +4065,7 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
               </button>
             )}
             <ShareButton label={title} state={{ v: "mbbs-topic", p: program, y: year, b: block, s: subject, mp: path }} />
+            {isAdmin && <DeleteMcqsButton label={title} ids={scoped.map((q) => q.id)} onDelete={onDeleteMcqs} />}
           </div>
         </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
@@ -3882,6 +4110,7 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
                   <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
                     {r.isFolder && <ChevronRight size={14} />}
                     <ShareButton label={r.name} state={shareState} />
+                    {isAdmin && <DeleteMcqsButton label={r.name} ids={r.ids} onDelete={onDeleteMcqs} />}
                   </span>
                 </div>
               );
@@ -3894,21 +4123,26 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
 }
 
 // ---------- Past Papers: named year/block folders per program ----------
-function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome }) {
+function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome, isAdmin, onDeleteMcqs }) {
   const folders = PAST_PAPER_FOLDERS[program] || [];
-  const counts = useMemo(() => {
+  const idsByName = useMemo(() => {
     const c = {};
     folders.forEach((f) => {
       if (typeof f === "string") {
-        c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+        c[f] = bank.filter((q) => q.program === program && q.source === f).map((q) => q.id);
       } else {
-        // Parent folder: count everything filed directly under it OR under any of its subfolders.
+        // Parent folder: everything filed directly under it OR under any of its subfolders.
         const names = [f.name, ...(f.subfolders || [])];
-        c[f.name] = bank.filter((q) => q.program === program && names.includes(q.source)).length;
+        c[f.name] = bank.filter((q) => q.program === program && names.includes(q.source)).map((q) => q.id);
       }
     });
     return c;
   }, [bank, program, folders]);
+  const counts = useMemo(() => {
+    const c = {};
+    Object.keys(idsByName).forEach((k) => { c[k] = idsByName[k].length; });
+    return c;
+  }, [idsByName]);
 
   const progInfo = PROGRAMS.find((p) => p.key === program);
 
@@ -3930,6 +4164,13 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
               label={`${progInfo ? progInfo.label : program} — Past Papers`}
               state={{ v: "pastpaper-folders", p: program }}
             />
+            {isAdmin && (
+              <DeleteMcqsButton
+                label={`${progInfo ? progInfo.label : program} — Past Papers`}
+                ids={bank.filter((q) => q.program === program && /past/i.test(q.source || "")).map((q) => q.id)}
+                onDelete={onDeleteMcqs}
+              />
+            )}
           </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
@@ -3977,7 +4218,10 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
                         </span>
                         {isNested && <ChevronRight size={16} style={{ color: T.inkSoft }} />}
                       </div>
-                      <ShareButton label={name} state={shareState} />
+                      <div className="flex items-center gap-1 shrink-0">
+                        <ShareButton label={name} state={shareState} />
+                        {isAdmin && <DeleteMcqsButton label={name} ids={idsByName[name] || []} onDelete={onDeleteMcqs} />}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -3992,15 +4236,20 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
 
 // Lists the test-level subfolders inside a single past-paper year (e.g. all the
 // individual tests inside "KMU CAT 2025").
-function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, onHome }) {
+function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, onHome, isAdmin, onDeleteMcqs }) {
   const subfolders = parent?.subfolders || [];
-  const counts = useMemo(() => {
+  const idsByName = useMemo(() => {
     const c = {};
     subfolders.forEach((f) => {
-      c[f] = bank.filter((q) => q.program === program && q.source === f).length;
+      c[f] = bank.filter((q) => q.program === program && q.source === f).map((q) => q.id);
     });
     return c;
   }, [bank, program, subfolders]);
+  const counts = useMemo(() => {
+    const c = {};
+    Object.keys(idsByName).forEach((k) => { c[k] = idsByName[k].length; });
+    return c;
+  }, [idsByName]);
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -4017,6 +4266,13 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
               </button>
             )}
             <ShareButton label={parent?.name} state={{ v: "pastpaper-subfolders", p: program, ppName: parent?.name }} />
+            {isAdmin && (
+              <DeleteMcqsButton
+                label={parent?.name}
+                ids={subfolders.flatMap((f) => idsByName[f] || [])}
+                onDelete={onDeleteMcqs}
+              />
+            )}
           </div>
         </div>
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
@@ -4055,7 +4311,10 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
                     <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
                       {f}
                     </span>
-                    <ShareButton label={f} state={{ v: "pastpaper-setup", p: program, pf: f }} />
+                    <div className="flex items-center gap-1 shrink-0">
+                      <ShareButton label={f} state={{ v: "pastpaper-setup", p: program, pf: f }} />
+                      {isAdmin && <DeleteMcqsButton label={f} ids={idsByName[f] || []} onDelete={onDeleteMcqs} />}
+                    </div>
                   </div>
                 </div>
               );
@@ -4069,7 +4328,7 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
 
 // Quiz setup for a single past-paper folder — no subject/topic step, since a real
 // past paper already mixes subjects the way the actual exam does.
-function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
+function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmin, onDeleteMcqs }) {
   const folderQuestions = bank.filter((q) => q.program === program && q.source === folder);
   const [count, setCount] = useState(10);
   const [timed, setTimed] = useState(false);
@@ -4092,6 +4351,7 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
               </button>
             )}
             <ShareButton label={folder} state={{ v: "pastpaper-setup", p: program, pf: folder }} />
+            {isAdmin && <DeleteMcqsButton label={folder} ids={folderQuestions.map((q) => q.id)} onDelete={onDeleteMcqs} />}
           </div>
         </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
@@ -4144,7 +4404,7 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome }) {
 }
 
 // ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, currentUserName }) {
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, currentUserName, isAdmin, onDeleteMcqs }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -4190,6 +4450,13 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
               </button>
             )}
             <ShareButton label={topic ? `${subject} — ${topic}` : subject} state={{ v: "subject", p: program, y: year, b: block, s: subject, t: topic }} />
+            {isAdmin && (
+              <DeleteMcqsButton
+                label={topic ? `${subject} — ${topic}` : subject}
+                ids={subjQuestions.map((q) => q.id)}
+                onDelete={onDeleteMcqs}
+              />
+            )}
           </div>
         </div>
         <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
@@ -5109,9 +5376,60 @@ function AdminGate({ onUnlock, onBack }) {
 }
 
 const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", type: "text", content: "" };
-const EMPTY_NOTIF_FORM = { title: "", message: "" };
+const EMPTY_NOTIF_FORM = { title: "", message: "", sendPush: true };
 
-function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit }) {
+// ---------- Admin: per-course WhatsApp Community links ----------
+// Reuses the same generic social-links key/value store as the WhatsApp Group /
+// Instagram / Facebook / TikTok cards (loadSocialLinksMap / saveSocialLinksMap),
+// just under different keys ("Community:MDCAT", "Community:MBBS", ...) — no new
+// database table needed. Each course only ever sees its OWN key on the Home
+// screen (see the `communityLink` lookup in Home), so setting the MDCAT link
+// here can never leak into what an MBBS student sees, and vice versa.
+function AdminCommunityLinksPanel({ socialLinks, onUpdateSocialLink }) {
+  const [drafts, setDrafts] = useState({});
+  const [savedFlash, setSavedFlash] = useState(null);
+
+  const valueFor = (courseKey) =>
+    drafts[courseKey] !== undefined ? drafts[courseKey] : (socialLinks && socialLinks[`Community:${courseKey}`]) || "";
+
+  const save = async (courseKey) => {
+    await onUpdateSocialLink(`Community:${courseKey}`, valueFor(courseKey).trim());
+    setSavedFlash(courseKey);
+    setTimeout(() => setSavedFlash((cur) => (cur === courseKey ? null : cur)), 1500);
+  };
+
+  return (
+    <div className="max-w-2xl">
+      <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-2">WhatsApp Community links</h2>
+      <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
+        Set one WhatsApp community/group invite link per course. A student only ever sees the shortcut for their own course on the Home screen.
+      </p>
+      <div className="space-y-4">
+        {PROGRAMS.map((p) => (
+          <div key={p.key} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+            <label className="text-xs tracking-widest uppercase block mb-2 flex items-center gap-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+              <Users size={13} /> {p.label}
+            </label>
+            <div className="flex gap-2">
+              <input
+                value={valueFor(p.key)}
+                onChange={(e) => setDrafts({ ...drafts, [p.key]: e.target.value })}
+                placeholder="https://chat.whatsapp.com/..."
+                className="flex-1 px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+              />
+              <button onClick={() => save(p.key)} className="px-4 py-2 text-sm shrink-0" style={{ background: T.emerald, color: "#fff" }}>
+                {savedFlash === p.key ? <Check size={14} /> : "Save"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit, isDark, onToggleTheme, socialLinks, onUpdateSocialLink, pushSubscriberCount, onSendPush, dailyReminder, onUpdateDailyReminder }) {
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -5168,13 +5486,20 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     }
     const prev = notifications;
     const fresh = (await loadNotifications()) || notifications;
-    const next = [...fresh, { ...notifForm, id: uid(), createdAt: new Date().toISOString() }];
+    const next = [...fresh, { ...notifForm, sendPush: undefined, id: uid(), createdAt: new Date().toISOString() }];
     setNotifications(next);
     const ok = await saveNotifications(next);
     if (!ok) {
       setNotifications(prev);
       alert("This notification was NOT sent — it could not be saved to the database, so students would not have seen it. Check your internet connection and try again.");
       return;
+    }
+    // Also push it to phones (even closed-app / installed-app) if the admin checked that box.
+    if (notifForm.sendPush && onSendPush) {
+      const pushOk = await onSendPush({ title: notifForm.title.trim(), body: notifForm.message.trim() });
+      if (!pushOk) {
+        alert("The in-app notification was sent, but the push (phone) notification could not be sent — check the push server setup.");
+      }
     }
     setNotifForm(EMPTY_NOTIF_FORM);
   };
@@ -5587,9 +5912,14 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             <ClipboardList size={20} />
             <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">Admin — Question Bank</h1>
           </div>
-          <button onClick={onExit} className="flex items-center gap-1 text-sm px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
-            <LogOut size={14} /> Exit admin
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={onToggleTheme} className="p-2" style={{ border: `1px solid ${T.line}` }} title="Toggle dark/light mode">
+              {isDark ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button onClick={onExit} className="flex items-center gap-1 text-sm px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
+              <LogOut size={14} /> Exit admin
+            </button>
+          </div>
         </div>
         <div className="max-w-5xl mx-auto px-6 flex gap-1 pb-3">
           {[
@@ -5598,6 +5928,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             { k: "bulk", label: "Bulk Upload (PDF)" },
             { k: "notes", label: "Notes" },
             { k: "notifications", label: "Notifications" },
+            { k: "community", label: "Community Links" },
             { k: "examdates", label: "Exam Dates" },
             { k: "dashboard", label: "Dashboard" },
             { k: "analytics", label: "Analytics" },
@@ -6330,9 +6661,60 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 style={{ border: `1px solid ${T.line}`, background: T.card }}
               />
             </div>
+            <label className="flex items-center gap-2 text-sm mb-4 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={!!notifForm.sendPush}
+                onChange={(e) => setNotifForm({ ...notifForm, sendPush: e.target.checked })}
+              />
+              <span>
+                Also send as a <b>push notification</b> — reaches students' phones even if the app is closed
+                {typeof pushSubscriberCount === "number" ? ` (${pushSubscriberCount} subscribed)` : ""}
+              </span>
+            </label>
             <button onClick={addNotification} className="flex items-center gap-2 px-5 py-2 text-sm mb-8" style={{ background: T.ink, color: T.paper }}>
-              <Plus size={16} /> Send notification
+              <Send size={16} /> Send notification
             </button>
+
+            <div className="p-4 mb-8 flex items-start gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <Bell size={16} style={{ color: T.amber, marginTop: 2 }} />
+              <div className="text-sm" style={{ color: T.inkSoft }}>
+                <b style={{ color: T.ink }}>Automatic daily reminder</b> is configured separately — see the toggle below.
+              </div>
+            </div>
+            <div className="p-5 mb-8" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-2 flex items-center gap-2">
+                <Clock size={16} /> Daily study reminder
+              </h3>
+              <p className="text-sm mb-3" style={{ color: T.inkSoft }}>
+                Sends a push notification to every subscribed student at this time, every day — no admin action needed once set.
+              </p>
+              <label className="flex items-center gap-2 text-sm mb-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!dailyReminder?.enabled}
+                  onChange={(e) => onUpdateDailyReminder({ ...dailyReminder, enabled: e.target.checked })}
+                />
+                <span>Enabled</span>
+              </label>
+              <div className="flex items-center gap-3 mb-3">
+                <input
+                  type="time"
+                  value={dailyReminder?.time || "18:00"}
+                  onChange={(e) => onUpdateDailyReminder({ ...dailyReminder, time: e.target.value })}
+                  className="px-3 py-2"
+                  style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+                />
+                <span className="text-xs" style={{ color: T.inkSoft }}>Server time (see setup notes)</span>
+              </div>
+              <input
+                value={dailyReminder?.message || "Don't break your streak — today's questions are waiting!"}
+                onChange={(e) => onUpdateDailyReminder({ ...dailyReminder, message: e.target.value })}
+                placeholder="Reminder message"
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink }}
+              />
+            </div>
 
             <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-3">
               Sent notifications ({notifications.length})
@@ -6357,6 +6739,10 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               )}
             </div>
           </div>
+        )}
+
+        {tab === "community" && (
+          <AdminCommunityLinksPanel socialLinks={socialLinks} onUpdateSocialLink={onUpdateSocialLink} />
         )}
 
         {tab === "examdates" && (
@@ -6619,6 +7005,8 @@ export default function App() {
   const [contactItems, setContactItems] = useState([]);
   const [socialLinks, setSocialLinks] = useState({});
   const [examDates, setExamDates] = useState({});
+  const [dailyReminder, setDailyReminder] = useState(DEFAULT_DAILY_REMINDER);
+  const [pushSubscriberCount, setPushSubscriberCount] = useState(null);
   // True once the admin passcode has been entered successfully this session.
   // Lets an admin see the "+ Add" controls on Syllabus/Guidelines/Contact/Notes
   // even after exiting the full Admin Panel, without giving those controls to students.
@@ -6641,6 +7029,31 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
+
+  // ---- Dark / Light theme ----
+  // Reads the saved choice once on first mount; defaults to dark (the app's
+  // original look) if nothing was saved yet or storage isn't available.
+  const [isDark, setIsDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      return saved ? saved === "dark" : true;
+    } catch {
+      return true;
+    }
+  });
+  // Applied synchronously during render (not in a useEffect) so the very first
+  // paint after a toggle already shows the right colors — no flash of the old
+  // theme. Mutates the shared T object in place; every T.xxx style read across
+  // the whole app picks this up automatically because this state change causes
+  // the whole visible tree to re-render.
+  Object.assign(T, isDark ? THEME_DARK : THEME_LIGHT);
+  const toggleTheme = () => {
+    setIsDark((d) => {
+      const next = !d;
+      try { localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light"); } catch {}
+      return next;
+    });
+  };
 
   useEffect(() => {
     (async () => {
@@ -6707,9 +7120,9 @@ export default function App() {
         }
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc] = await Promise.all([
+      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc, dr] = await Promise.all([
         loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(), loadExamDates(),
-        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(),
+        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(), loadDailyReminder(),
       ]);
       setNotesBank(n);
       setNotifications(notifs);
@@ -6722,6 +7135,7 @@ export default function App() {
       setExplanationFeedback(ef);
       setQuestionReports(qr);
       setDiscussions(disc);
+      setDailyReminder(dr);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -7019,6 +7433,41 @@ export default function App() {
     await saveQuestionReports(next);
   };
 
+  // ---- Delete MCQs matching a folder/topic scope (ADMIN ONLY) ----
+  // Used by the small trash-can icon that sits next to the share icon on every
+  // folder/topic card once an admin is logged in. `ids` is always computed by
+  // the calling page using the exact same filter it already uses for that
+  // card's own question-count badge — this function just removes those exact
+  // questions, atomically on the database side (same delete_mcqs() RPC and
+  // CDN/cache sync used by the bulk-delete tool in the Admin Panel), so there's
+  // no risk of a stale full-bank write clobbering someone else's change.
+  const deleteMcqsByIds = async (ids) => {
+    if (!ids || ids.length === 0) return false;
+    if (!adminUnlocked) return false; // defensive: never allow this from a non-admin session
+    const prev = bank;
+    const idSet = new Set(ids);
+    const next = bank.filter((q) => !idSet.has(q.id));
+    setBank(next);
+    try {
+      const { error } = await supabase.rpc("delete_mcqs", { question_ids: ids });
+      if (error) throw error;
+      lastKnownBankLength = next.length;
+      const cacheSaved = await saveLocalBankCache(next);
+      const cdnVersion = await pushBankToCdn(next);
+      if (cdnVersion !== null) {
+        lastKnownBankVersion = cdnVersion;
+        if (cacheSaved) saveLocalBankVersion(cdnVersion);
+        else clearLocalBankVersion();
+      }
+      return true;
+    } catch (e) {
+      console.error("Delete MCQs by scope failed:", e);
+      setBank(prev);
+      alert("Could not delete these questions — check your internet connection and try again.");
+      return false;
+    }
+  };
+
   // ---- Discussion threads: one comment list per topic, keyed by a stable string ----
   const postDiscussion = async (topicKey, text) => {
     const entry = {
@@ -7075,6 +7524,26 @@ export default function App() {
     setSocialLinks(next);
     await saveSocialLinksMap(next);
   };
+
+  // ---- Push notifications: admin broadcast + daily reminder settings ----
+  const sendPushBroadcastHandler = async ({ title, body }) => {
+    return await sendPushBroadcast({ title, body });
+  };
+  const updateDailyReminder = async (next) => {
+    const prev = dailyReminder;
+    setDailyReminder(next);
+    const ok = await saveDailyReminder(next);
+    if (!ok) {
+      setDailyReminder(prev);
+      alert("Could not save the daily reminder settings — check your internet connection and try again.");
+    }
+  };
+  // Subscriber count is only fetched once the admin actually opens the Admin
+  // Panel — no need to hit the Worker on every regular student's app load.
+  useEffect(() => {
+    if (view !== "admin") return;
+    (async () => setPushSubscriberCount(await loadPushSubscriberCount()))();
+  }, [view]);
 
   // ---- Quick "add note" from inside the Notes tab (admin only) ----
   const quickAddNote = async (programKey, subjectName, title, content, type = "text") => {
@@ -7253,6 +7722,9 @@ export default function App() {
         onAddNote={quickAddNote}
         examDates={examDates}
         onOpenPastPapers={openPastPapers}
+        isDark={isDark}
+        onToggleTheme={toggleTheme}
+        userId={user?.id}
       />
     );
   }
@@ -7276,6 +7748,14 @@ export default function App() {
         onDeleteReport={deleteReport}
         explanationFeedback={explanationFeedback}
         onExit={() => setView("home")}
+        isDark={isDark}
+        onToggleTheme={toggleTheme}
+        socialLinks={socialLinks}
+        onUpdateSocialLink={updateSocialLink}
+        pushSubscriberCount={pushSubscriberCount}
+        onSendPush={sendPushBroadcastHandler}
+        dailyReminder={dailyReminder}
+        onUpdateDailyReminder={updateDailyReminder}
       />
     );
   }
@@ -7289,6 +7769,8 @@ export default function App() {
         onOpenSubject={openSubject}
         onOpenYear={openYear}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7302,6 +7784,8 @@ export default function App() {
         onBack={() => setView("program")}
         onOpenBlock={openBlock}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7316,6 +7800,8 @@ export default function App() {
         onBack={() => setView("year")}
         onOpenSubject={openSubject}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7329,6 +7815,8 @@ export default function App() {
         onBack={() => setView("program")}
         onOpenTopic={openTopic}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7345,6 +7833,8 @@ export default function App() {
         onBack={backMbbsTopic}
         onOpenItem={openMbbsItem}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7365,6 +7855,8 @@ export default function App() {
         discussions={discussions}
         onPostDiscussion={postDiscussion}
         currentUserName={user?.user_metadata?.name || ""}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7377,6 +7869,8 @@ export default function App() {
         onOpenFolder={openPastPaperFolder}
         onOpenSubfolders={openPastPaperSubfolders}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7389,6 +7883,8 @@ export default function App() {
         onBack={() => setView("pastpaper-folders")}
         onOpenFolder={openPastPaperFolder}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
@@ -7401,6 +7897,8 @@ export default function App() {
         onBack={() => setView(pastPaperParent ? "pastpaper-subfolders" : "pastpaper-folders")}
         onStart={startPastPaperQuiz}
         onHome={() => setView("home")}
+        isAdmin={adminUnlocked}
+        onDeleteMcqs={deleteMcqsByIds}
       />
     );
   }
