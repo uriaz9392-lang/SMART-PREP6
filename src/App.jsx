@@ -33,7 +33,7 @@ const CDN_ADMIN_KEY = "THpKGBzsM4dtsa9ruyvmlxbD6AzPfMwB-ZOawZmHSqY";
 // Cloudflare Worker only). Fill this in with the key from `npx web-push
 // generate-vapid-keys` — see SETUP.md. Push notifications quietly no-op
 // until this is set.
-const VAPID_PUBLIC_KEY = "";
+const VAPID_PUBLIC_KEY = "BLGIiY4sGCS31vleTCZUQaZ-qTP540EfCdNcZstYPx_BwQVPiAvFn0-ovFLa_UuDi6QdQmXnAQlH05ltOd_Rk6w";
 
 // Use localStorage (instead of sessionStorage) to keep the login session.
 // This ties "being logged in" to the device/browser itself, not to a single
