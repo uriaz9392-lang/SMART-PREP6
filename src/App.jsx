@@ -1527,11 +1527,14 @@ let lastKnownBankVersion = null;
 // Supabase write (add/edit/delete) so the CDN copy that students actually
 // read from stays in sync. Supabase remains the real save in all cases —
 // this only affects how fast the CDN catches up, never data safety.
-// Retries a couple of times on failure: on a slow mobile connection the PUT
-// can time out client-side even though it actually reached and succeeded on
-// the server — a short retry clears up most of those false "sync failed"
-// alerts without risking a duplicate write (the PUT always replaces the
-// bank with this exact same payload, so re-sending it is always safe).
+// Retries on failure: on a slow mobile connection the PUT can time out
+// client-side even though it actually reached and succeeded on the server —
+// a retry clears up most of those false "sync failed" alerts without risking
+// a duplicate write (the PUT always replaces the bank with this exact same
+// payload, so re-sending it is always safe). Bumped from 3 to 5 attempts with
+// a longer backoff between them (up to 8s), since on a genuinely slow/flaky
+// connection (a few hundred KB/s or less) a multi-MB payload needs more room
+// to eventually get through than 3 quick retries gave it.
 async function pushBankToCdn(bank, attempt = 1) {
   try {
     const cdnRes = await fetch(`${CDN_BASE}/bank`, {
@@ -1547,8 +1550,8 @@ async function pushBankToCdn(bank, attempt = 1) {
   } catch (e) {
     console.error("CDN bank push failed:", e);
   }
-  if (attempt < 3) {
-    await new Promise((r) => setTimeout(r, attempt * 1500));
+  if (attempt < 5) {
+    await new Promise((r) => setTimeout(r, Math.min(attempt * 2000, 8000)));
     return pushBankToCdn(bank, attempt + 1);
   }
   return null;
@@ -5456,6 +5459,12 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  // Guards against duplicate saves: on a slow connection, submit()/saveBulkResults()
+  // can take a while, and without this a second (or third) tap on the button before
+  // the first save finishes would fire off separate saves — which is what was
+  // causing the same MCQ(s) to end up added 2-3 times.
+  const [saving, setSaving] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [filterProgram, setFilterProgram] = useState("All");
   const [search, setSearch] = useState("");
   const [newPass, setNewPass] = useState("");
@@ -5746,6 +5755,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   };
 
   const saveBulkResults = async () => {
+    if (bulkSaving) return; // already in-flight — ignore extra taps
     const toAdd = bulkResults
       .filter((m) => m.include)
       .map((m) => ({
@@ -5777,8 +5787,10 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     // the 1st, since the bank — and so the download+upload size — has already
     // grown from the previous save).
     const next = [...bank, ...toAdd];
+    setBulkSaving(true);
     setBank(next);
     const ok = await saveBank(next);
+    setBulkSaving(false);
     if (ok !== true) {
       setBank(prevBank);
       alert(
@@ -5888,6 +5900,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   };
 
   const submit = async () => {
+    if (saving) return; // already in-flight — ignore extra taps
     if (!form.question.trim() || form.options.some((o) => !o.trim())) {
       alert("Please fill in the question and all four options.");
       return;
@@ -5917,8 +5930,10 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     } else {
       next = [...bank, { ...formToSave, id: uid() }];
     }
+    setSaving(true);
     setBank(next);
     const ok = await saveBank(next);
+    setSaving(false);
     if (ok !== true) {
       setBank(prevBank);
       alert(
@@ -6245,8 +6260,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               <textarea value={form.explanation} onChange={(e) => setForm({ ...form, explanation: e.target.value })} rows={2} className="w-full px-3 py-2" style={{ border: `1px solid ${T.line}`, background: T.card }} />
             </div>
             <div className="flex gap-3">
-              <button onClick={submit} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
-                <Save size={16} /> {editingId ? "Save changes" : "Add to bank"}
+              <button onClick={submit} disabled={saving} className="flex items-center gap-2 px-5 py-2 text-sm disabled:opacity-50" style={{ background: T.ink, color: T.paper }}>
+                <Save size={16} /> {saving ? "Saving…" : editingId ? "Save changes" : "Add to bank"}
               </button>
               <button onClick={() => setTab("list")} className="px-5 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>Cancel</button>
             </div>
@@ -6453,8 +6468,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   <div className="text-sm" style={{ color: T.inkSoft }}>
                     {bulkResults.length} question(s) found — {bulkResults.filter((m) => m.include).length} selected. Review, then save.
                   </div>
-                  <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm" style={{ background: T.emerald, color: "#fff" }}>
-                    <Save size={16} /> Add selected to bank
+                  <button onClick={saveBulkResults} disabled={bulkSaving} className="flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-50" style={{ background: T.emerald, color: "#fff" }}>
+                    <Save size={16} /> {bulkSaving ? "Saving…" : "Add selected to bank"}
                   </button>
                 </div>
                 <div className="space-y-3">
@@ -6514,8 +6529,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     </div>
                   ))}
                 </div>
-                <button onClick={saveBulkResults} className="flex items-center gap-2 px-4 py-2 text-sm mt-4" style={{ background: T.emerald, color: "#fff" }}>
-                  <Save size={16} /> Add selected to bank
+                <button onClick={saveBulkResults} disabled={bulkSaving} className="flex items-center gap-2 px-4 py-2 text-sm mt-4 disabled:opacity-50" style={{ background: T.emerald, color: "#fff" }}>
+                  <Save size={16} /> {bulkSaving ? "Saving…" : "Add selected to bank"}
                 </button>
               </div>
             )}
