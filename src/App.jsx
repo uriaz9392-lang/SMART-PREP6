@@ -5766,8 +5766,17 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     const prevBank = bank;
-    const fresh = (await loadBank()) || bank;
-    const next = [...fresh, ...toAdd];
+    // Use the bank already held in memory instead of re-downloading the entire
+    // bank over the network first. saveBank() below already protects against
+    // another tab/device's changes via its own concurrency check (bank_version),
+    // so this extra download was purely redundant — it doubled the data
+    // transferred (download the full bank, then upload the full bank again)
+    // on every single save. On a slow mobile connection with a large, growing
+    // bank, that's what made the admin panel slow and made bulk PDF saves
+    // increasingly likely to time out (the 2nd/3rd PDF fails more often than
+    // the 1st, since the bank — and so the download+upload size — has already
+    // grown from the previous save).
+    const next = [...bank, ...toAdd];
     setBank(next);
     const ok = await saveBank(next);
     if (ok !== true) {
@@ -5896,13 +5905,17 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       }
     }
     const prevBank = bank;
-    const fresh = (await loadBank()) || bank;
+    // Same reasoning as in saveBulkResults() above: use the bank already held
+    // in memory rather than re-downloading the whole thing first. saveBank()'s
+    // own bank_version check already guards against another tab/device having
+    // changed things in the meantime, so this avoids doubling the network
+    // transfer on every single question add/edit.
     const formToSave = form.subject === PAST_PAPERS_SUBJECT ? { ...form, topic: form.source } : form;
     let next;
     if (editingId) {
-      next = fresh.map((q) => (q.id === editingId ? { ...formToSave, id: editingId } : q));
+      next = bank.map((q) => (q.id === editingId ? { ...formToSave, id: editingId } : q));
     } else {
-      next = [...fresh, { ...formToSave, id: uid() }];
+      next = [...bank, { ...formToSave, id: uid() }];
     }
     setBank(next);
     const ok = await saveBank(next);
