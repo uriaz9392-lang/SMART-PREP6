@@ -33,7 +33,7 @@ const CDN_ADMIN_KEY = "THpKGBzsM4dtsa9ruyvmlxbD6AzPfMwB-ZOawZmHSqY";
 // Cloudflare Worker only). Fill this in with the key from `npx web-push
 // generate-vapid-keys` — see SETUP.md. Push notifications quietly no-op
 // until this is set.
-const VAPID_PUBLIC_KEY = "BLGIiY4sGCS31vleTCZUQaZ-qTP540EfCdNcZstYPx_BwQVPiAvFn0-ovFLa_UuDi6QdQmXnAQlH05ltOd_Rk6w";
+const VAPID_PUBLIC_KEY = "";
 
 // Use localStorage (instead of sessionStorage) to keep the login session.
 // This ties "being logged in" to the device/browser itself, not to a single
@@ -1504,6 +1504,17 @@ function clearLocalBankVersion() {
 // edit. Genuine bulk deletes (which already ask for confirmation) pass { force: true }.
 let lastKnownBankLength = null;
 
+// Tracks the bank_version this browser tab last saw from SUPABASE specifically
+// (NOT the Cloudflare CDN's separate KV version counter below — those are two
+// different counters that increment independently). Used as an optimistic-
+// concurrency check: if some OTHER tab/device has changed the bank in Supabase
+// since we last saw it, we refuse to blindly overwrite with our own (now-stale)
+// copy. Keeping this Supabase-only (instead of mixing in the CDN's number, which
+// can lag behind on a slow connection even for OUR OWN just-completed save) is
+// what stops a slow/flaky network from ever triggering a false "changed
+// elsewhere" warning against ourselves.
+let lastKnownSupabaseBankVersion = null;
+
 // Tracks the bank_version this browser tab last saw (either from its initial load,
 // or right after this tab itself last saved). Used as an optimistic-concurrency
 // check: if some OTHER tab/device has changed the bank since we last saw it, we
@@ -1516,7 +1527,12 @@ let lastKnownBankVersion = null;
 // Supabase write (add/edit/delete) so the CDN copy that students actually
 // read from stays in sync. Supabase remains the real save in all cases —
 // this only affects how fast the CDN catches up, never data safety.
-async function pushBankToCdn(bank) {
+// Retries a couple of times on failure: on a slow mobile connection the PUT
+// can time out client-side even though it actually reached and succeeded on
+// the server — a short retry clears up most of those false "sync failed"
+// alerts without risking a duplicate write (the PUT always replaces the
+// bank with this exact same payload, so re-sending it is always safe).
+async function pushBankToCdn(bank, attempt = 1) {
   try {
     const cdnRes = await fetch(`${CDN_BASE}/bank`, {
       method: "PUT",
@@ -1528,11 +1544,14 @@ async function pushBankToCdn(bank) {
       return typeof cdnData.version === "number" ? cdnData.version : null;
     }
     console.error("CDN bank push failed with status:", cdnRes.status);
-    return null;
   } catch (e) {
     console.error("CDN bank push failed:", e);
-    return null;
   }
+  if (attempt < 3) {
+    await new Promise((r) => setTimeout(r, attempt * 1500));
+    return pushBankToCdn(bank, attempt + 1);
+  }
+  return null;
 }
 
 async function saveBank(bank, opts = {}) {
@@ -1546,12 +1565,15 @@ async function saveBank(bank, opts = {}) {
     return "blocked";
   }
   // Concurrency check: has someone else (another tab/device) saved since we last loaded?
-  // Uses the same source (loadBankVersion, which prefers the CDN) that the rest of the
-  // app uses, so this comparison is always against the same version numbering.
-  if (!opts.force && lastKnownBankVersion !== null) {
+  // Checks Supabase's own bank_version directly — NOT the CDN's separate version
+  // counter — so a slow/flaky connection to the CDN can never cause this to
+  // fire against our own edits.
+  if (!opts.force && lastKnownSupabaseBankVersion !== null) {
     try {
-      const currentRemoteVersion = await loadBankVersion();
-      if (currentRemoteVersion !== null && currentRemoteVersion !== lastKnownBankVersion) {
+      const { data, error } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      const currentRemoteVersion = data && typeof data.bank_version === "number" ? data.bank_version : null;
+      if (currentRemoteVersion !== null && currentRemoteVersion !== lastKnownSupabaseBankVersion) {
         alert(
           "This question bank was changed elsewhere (another tab or device) since this screen loaded your copy. " +
           "To avoid undoing that change or bringing back a deleted question, please reload the app and try your edit again."
@@ -1576,6 +1598,7 @@ async function saveBank(bank, opts = {}) {
       const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
       const nextVersion = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
       await supabase.from("app_data").update({ bank_version: nextVersion }).eq("id", 1);
+      lastKnownSupabaseBankVersion = nextVersion;
       // Only record this version as "ours" if our own local cache actually
       // saved successfully — otherwise this same device would wrongly trust
       // its own stale/incomplete cache next time it opens the app.
@@ -7083,6 +7106,16 @@ export default function App() {
       // which branch below actually runs — saveBank() uses it later to detect
       // if another tab/device changed the data in the meantime.
       if (remoteVersion !== null) lastKnownBankVersion = remoteVersion;
+      // Also fetch Supabase's own bank_version for the concurrency check in
+      // saveBank() — deliberately separate from remoteVersion above, since that
+      // one may have come from the CDN cache instead (see saveBank for why these
+      // two numbers must never be mixed together).
+      try {
+        const { data: verRow } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+        if (verRow && typeof verRow.bank_version === "number") lastKnownSupabaseBankVersion = verRow.bank_version;
+      } catch (e) {
+        console.error("Could not load initial bank_version:", e);
+      }
       if (remoteVersion !== null && localVersion !== null && remoteVersion === localVersion && cachedBank && cachedBank.length > 0) {
         // Nothing changed since last time — use the cached bank, no big download.
         b = cachedBank;
@@ -7179,9 +7212,15 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    const name = user.user_metadata?.name || user.email || "";
+    // Fire an immediate ping as soon as a session starts (not just after the
+    // first 60s interval below) — otherwise any student whose visit is
+    // shorter than 60 seconds contributed nothing at all to "Active today",
+    // which was making real usage look like zero on the Admin Dashboard.
+    pingUsage(user.id, name, 1);
     const tick = () => {
       if (document.visibilityState === "visible") {
-        pingUsage(user.id, user.user_metadata?.name || user.email || "", 1);
+        pingUsage(user.id, name, 1);
       }
     };
     const interval = setInterval(tick, 60000);
