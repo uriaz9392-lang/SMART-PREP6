@@ -2103,7 +2103,7 @@ function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRe
 }
 
 // ---------- Reviews: every signed-in student can post one, everyone can read all of them ----------
-function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDelete, isAdmin }) {
+function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDelete, onSetProgram, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [rating, setRating] = useState(5);
   const [text, setText] = useState("");
@@ -2181,6 +2181,21 @@ function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDele
                   </div>
                 </div>
                 <div className="text-sm mb-2" style={{ color: T.inkSoft }}>{r.text}</div>
+
+                {isAdmin && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>Course:</span>
+                    <select
+                      value={r.program || ""}
+                      onChange={(e) => onSetProgram(r.id, e.target.value || null)}
+                      className="text-xs px-2 py-1"
+                      style={{ border: `1px solid ${r.program ? T.line : T.rose}`, background: T.paper, color: r.program ? T.ink : T.rose }}
+                    >
+                      <option value="">Unassigned — hidden from students</option>
+                      {COURSES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                    </select>
+                  </div>
+                )}
 
                 {r.adminReply && (
                   <div className="mt-2 mb-2 p-2 text-sm" style={{ background: T.paper, borderLeft: `2px solid ${T.emerald}` }}>
@@ -3055,7 +3070,7 @@ function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
   notesBank, notifications, onRefreshNotifications, isAdmin,
-  reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview,
+  reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview, onSetReviewProgram,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
   guidelineItems, onAddGuideline, onRemoveGuideline,
   contactItems, onAddContact, onRemoveContact,
@@ -3397,12 +3412,13 @@ function Home({
     );
   }
   if (navTab === "reviews") {
-    // Students only see reviews from their own course (plus any older reviews
-    // saved before courses were tracked, so nothing old just disappears).
-    // Admin sees every course's reviews together, for moderation.
+    // Students only see reviews tagged with their own course. A review with
+    // no course tag (written before this feature existed) is now admin-only
+    // until the admin assigns it a course from the Reviews page — it no
+    // longer leaks to every student by default.
     const visibleReviews = isAdmin
       ? reviews
-      : reviews.filter((r) => !r.program || r.program === userCourse);
+      : reviews.filter((r) => r.program === userCourse);
     return (
       <>
         <ReviewsPage
@@ -3413,6 +3429,7 @@ function Home({
           onLike={onLikeReview}
           onReply={onReplyReview}
           onDelete={onDeleteReview}
+          onSetProgram={onSetReviewProgram}
           isAdmin={isAdmin}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
@@ -7722,6 +7739,15 @@ export default function App() {
     setReviews(next);
     await saveReviews(next);
   };
+  // Admin-only: assign/change which course a review belongs to. Mainly for
+  // reviews written before per-course tagging existed — those started out
+  // admin-only (no course tag), and this is how the admin puts them in front
+  // of the right students, or fixes a wrongly-tagged one.
+  const setReviewProgram = async (reviewId, program) => {
+    const next = reviews.map((r) => (r.id === reviewId ? { ...r, program } : r));
+    setReviews(next);
+    await saveReviews(next);
+  };
   // Admin-only: delete a review entirely.
   const deleteReview = async (reviewId) => {
     const next = reviews.filter((r) => r.id !== reviewId);
@@ -8083,6 +8109,7 @@ export default function App() {
         onLikeReview={likeReview}
         onReplyReview={replyToReview}
         onDeleteReview={deleteReview}
+        onSetReviewProgram={setReviewProgram}
         syllabusItems={syllabusItems}
         onAddSyllabus={addSyllabusItem}
         onRemoveSyllabus={removeSyllabusItem}
