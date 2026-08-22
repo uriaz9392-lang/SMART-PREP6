@@ -555,7 +555,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history, course")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -572,6 +572,7 @@ export async function loadUserStats(userId) {
       name: data.name || "",
       flpUsed: data.flp_used || {},
       history: data.history || [],
+      course: data.course || null,
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -594,6 +595,7 @@ export async function saveUserStats(userId, stats) {
       name: stats.name || "",
       flp_used: stats.flpUsed || {},
       history: stats.history || [],
+      course: stats.course || null,
     });
     if (error) throw error;
   } catch (e) {
@@ -607,6 +609,11 @@ export async function saveUserStats(userId, stats) {
 // app open — this is what keeps leaderboard reads free/cheap. Saving a
 // student's own stats is completely unchanged and still goes to Supabase
 // directly (see saveUserStats), so progress is never delayed or at risk.
+// NOTE: per-course filtering is done on the client (in LeaderboardView) by
+// matching each row's `course` field — the Worker's own cached payload needs
+// to include that field too (it's a separate file, not this one) for rows
+// coming from the CDN path below to be filterable; the Supabase fallback
+// path already selects it.
 export async function loadLeaderboard(limit = 50) {
   try {
     const res = await fetch(`${CDN_BASE}/leaderboard`);
@@ -619,7 +626,7 @@ export async function loadLeaderboard(limit = 50) {
     try {
       const { data, error } = await supabase
         .from("user_stats")
-        .select("name, total_attempted, total_correct")
+        .select("name, total_attempted, total_correct, course")
         .order("total_correct", { ascending: false })
         .limit(limit);
       if (error) throw error;
@@ -766,7 +773,10 @@ export async function pingUsage(userId, name, minutes = 1) {
   }
 }
 
-// Pulls everything needed for the Admin Dashboard in one go.
+// Pulls everything needed for the Admin Dashboard in one go. Also returns any
+// error message hit while loading (e.g. "usage_daily" table missing, or RLS
+// blocking the read) so the Admin Dashboard can show it directly on-screen
+// instead of it only being visible in the browser console.
 export async function loadUsageDashboard() {
   try {
     const [installsRes, usageRes] = await Promise.all([
@@ -775,10 +785,35 @@ export async function loadUsageDashboard() {
     ]);
     if (installsRes.error) throw installsRes.error;
     if (usageRes.error) throw usageRes.error;
-    return { installs: installsRes.data || [], usage: usageRes.data || [] };
+    return { installs: installsRes.data || [], usage: usageRes.data || [], error: null };
   } catch (e) {
     console.error("Load usage dashboard failed (create 'app_installs' + 'usage_daily' tables — see comments above):", e);
-    return { installs: [], usage: [] };
+    return { installs: [], usage: [], error: e?.message || String(e) };
+  }
+}
+// Quick on-demand check the admin can trigger from the Dashboard tab: tries a
+// real insert + delete against usage_daily and reports the exact Postgres/
+// Supabase error back (e.g. "relation \"usage_daily\" does not exist" means
+// the table was never created; a permission-denied error means RLS is on).
+// This exists so a setup problem can be diagnosed from the app itself,
+// without needing to open the Supabase dashboard or browser dev tools.
+export async function testUsageTracking() {
+  const testId = "00000000-0000-0000-0000-000000000000";
+  const testDate = "1970-01-01";
+  try {
+    const { error: upsertError } = await supabase
+      .from("usage_daily")
+      .upsert({ user_id: testId, date: testDate, name: "__test__", minutes: 1 });
+    if (upsertError) throw upsertError;
+    const { error: deleteError } = await supabase
+      .from("usage_daily")
+      .delete()
+      .eq("user_id", testId)
+      .eq("date", testDate);
+    if (deleteError) throw deleteError;
+    return { ok: true, message: "usage_daily table is reachable and writable — tracking should work." };
+  } catch (e) {
+    return { ok: false, message: e?.message || String(e) };
   }
 }
 // ============================================================================
@@ -1784,6 +1819,18 @@ function buildFLPExam(bank, program, usedIds) {
   return { questions, shortfalls };
 }
 
+// ---------- WhatsApp brand icon ----------
+// lucide-react (the icon set this app uses) doesn't include brand/logo icons,
+// so the recognizable WhatsApp glyph is drawn inline here instead of pulling
+// in a whole extra icon-package dependency for one icon.
+function WhatsAppIcon({ size = 20, color = "#fff" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill={color} xmlns="http://www.w3.org/2000/svg">
+      <path d="M16.004 3C9.377 3 4 8.373 4 15c0 2.34.657 4.527 1.797 6.39L3 29l7.86-2.06A11.94 11.94 0 0 0 16.004 27C22.63 27 28 21.627 28 15S22.63 3 16.004 3zm0 21.7c-1.98 0-3.83-.55-5.41-1.5l-.39-.23-4.66 1.22 1.24-4.54-.25-.4A9.66 9.66 0 0 1 5.3 15c0-5.9 4.8-10.7 10.7-10.7S26.7 9.1 26.7 15 21.9 24.7 16 24.7zm5.87-8.02c-.32-.16-1.9-.94-2.2-1.05-.3-.11-.51-.16-.73.16-.21.32-.84 1.05-1.03 1.26-.19.21-.38.24-.7.08-.32-.16-1.35-.5-2.57-1.59-.95-.85-1.59-1.9-1.78-2.22-.19-.32-.02-.49.14-.65.14-.14.32-.38.48-.56.16-.19.21-.32.32-.53.11-.21.05-.4-.03-.56-.08-.16-.73-1.76-1-2.41-.26-.63-.53-.54-.73-.55h-.62c-.21 0-.56.08-.85.4-.29.32-1.12 1.1-1.12 2.67 0 1.57 1.15 3.09 1.31 3.3.16.21 2.26 3.45 5.47 4.84.76.33 1.36.53 1.82.67.77.24 1.46.21 2.01.13.61-.09 1.9-.78 2.17-1.53.27-.75.27-1.4.19-1.53-.08-.13-.29-.21-.61-.37z" />
+    </svg>
+  );
+}
+
 // ---------- Fonts ----------
 function FontLoader() {
   useEffect(() => {
@@ -2056,7 +2103,7 @@ function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRe
 }
 
 // ---------- Reviews: every signed-in student can post one, everyone can read all of them ----------
-function ReviewsPage({ onBack, reviews, userName, onAdd }) {
+function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDelete, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [rating, setRating] = useState(5);
   const [text, setText] = useState("");
@@ -2120,19 +2167,58 @@ function ReviewsPage({ onBack, reviews, userName, onAdd }) {
         </div>
       ) : (
         <div className="space-y-3">
-          {sorted.map((r) => (
-            <div key={r.id} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-              <div className="flex items-center justify-between mb-1">
-                <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</div>
-                <div className="flex items-center gap-0.5">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <Star key={n} size={13} style={{ color: n <= r.rating ? T.amber : T.inkSoft }} fill={n <= r.rating ? T.amber : "none"} />
-                  ))}
+          {sorted.map((r) => {
+            const liked = userName && (r.likes || []).includes(userName);
+            const likeCount = (r.likes || []).length;
+            return (
+              <div key={r.id} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                <div className="flex items-center justify-between mb-1">
+                  <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{r.name}</div>
+                  <div className="flex items-center gap-0.5">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Star key={n} size={13} style={{ color: n <= r.rating ? T.amber : T.inkSoft }} fill={n <= r.rating ? T.amber : "none"} />
+                    ))}
+                  </div>
+                </div>
+                <div className="text-sm mb-2" style={{ color: T.inkSoft }}>{r.text}</div>
+
+                {r.adminReply && (
+                  <div className="mt-2 mb-2 p-2 text-sm" style={{ background: T.paper, borderLeft: `2px solid ${T.emerald}` }}>
+                    <div className="text-xs mb-1" style={{ color: T.emerald, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      Admin reply
+                    </div>
+                    {r.adminReply.text}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3 mt-2">
+                  <button
+                    onClick={() => onLike(r.id)}
+                    className="flex items-center gap-1 text-xs"
+                    style={{ color: liked ? T.emerald : T.inkSoft }}
+                  >
+                    <Star size={12} fill={liked ? T.emerald : "none"} /> {likeCount > 0 ? likeCount : "Like"}
+                  </button>
+                  {isAdmin && !r.adminReply && (
+                    <AdminReplyInline onSubmit={(text) => onReply(r.id, text)} />
+                  )}
+                  {isAdmin && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm("Delete this review? This cannot be undone.")) {
+                          onDelete(r.id);
+                        }
+                      }}
+                      className="flex items-center gap-1 text-xs"
+                      style={{ color: T.rose }}
+                    >
+                      <Trash2 size={12} /> Delete
+                    </button>
+                  )}
                 </div>
               </div>
-              <div className="text-sm" style={{ color: T.inkSoft }}>{r.text}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </InfoFolderPage>
@@ -2611,7 +2697,7 @@ function NotificationsOverlay({ notifications, onClose }) {
 }
 
 // ---------- Leaderboard ----------
-function LeaderboardView({ onBack, currentUserName }) {
+function LeaderboardView({ onBack, currentUserName, userCourse }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -2619,11 +2705,16 @@ function LeaderboardView({ onBack, currentUserName }) {
   useEffect(() => {
     (async () => {
       const data = await loadLeaderboard(50);
-      setRows(data);
-      setError(data.length === 0);
+      // Keep only rows for the student's own course. Rows saved before course
+      // tracking existed (or coming from the CDN cache before it's updated to
+      // include `course`) have no course field — those are kept visible too,
+      // rather than silently dropped, so old progress doesn't just disappear.
+      const filtered = userCourse ? data.filter((r) => !r.course || r.course === userCourse) : data;
+      setRows(filtered);
+      setError(filtered.length === 0);
       setLoading(false);
     })();
-  }, []);
+  }, [userCourse]);
 
   const medalColor = (i) => (i === 0 ? "#D4AF37" : i === 1 ? "#B7C0C7" : i === 2 ? "#C9793C" : T.inkSoft);
 
@@ -2637,7 +2728,7 @@ function LeaderboardView({ onBack, currentUserName }) {
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1 flex items-center gap-2">
           <Trophy size={22} style={{ color: T.amber }} /> Leaderboard
         </h1>
-        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers across all students.</p>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers{userCourse ? ` among ${userCourse} students` : " across all students"}.</p>
 
         {loading && <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>}
 
@@ -2964,7 +3055,7 @@ function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
   notesBank, notifications, onRefreshNotifications, isAdmin,
-  reviews, onAddReview,
+  reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
   guidelineItems, onAddGuideline, onRemoveGuideline,
   contactItems, onAddContact, onRemoveContact,
@@ -3306,13 +3397,23 @@ function Home({
     );
   }
   if (navTab === "reviews") {
+    // Students only see reviews from their own course (plus any older reviews
+    // saved before courses were tracked, so nothing old just disappears).
+    // Admin sees every course's reviews together, for moderation.
+    const visibleReviews = isAdmin
+      ? reviews
+      : reviews.filter((r) => !r.program || r.program === userCourse);
     return (
       <>
         <ReviewsPage
           onBack={() => setNavTab("profile")}
-          reviews={reviews}
+          reviews={visibleReviews}
           userName={userName}
           onAdd={onAddReview}
+          onLike={onLikeReview}
+          onReply={onReplyReview}
+          onDelete={onDeleteReview}
+          isAdmin={isAdmin}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
       </>
@@ -3619,7 +3720,7 @@ function Home({
               ? [{
                   label: "Community",
                   sub: communityLink ? `Join ${userCourse} group` : "Coming soon",
-                  icon: Users,
+                  isWhatsApp: true,
                   action: communityLink
                     ? () => window.open(communityLink, "_blank", "noopener,noreferrer")
                     : () => alert("The community link hasn't been added yet — check back soon."),
@@ -3630,9 +3731,15 @@ function Home({
             const Icon = q.icon;
             return (
               <button key={q.label} onClick={q.action} className="p-4 text-left flex flex-col gap-2" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}>
-                <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
-                  <Icon size={16} />
-                </div>
+                {q.isWhatsApp ? (
+                  <div className="flex items-center justify-center" style={{ width: 44, height: 44, borderRadius: "50%", background: "#25D366" }}>
+                    <WhatsAppIcon size={24} color="#fff" />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }}>
+                    <Icon size={16} />
+                  </div>
+                )}
                 <div className="text-sm font-medium">{q.label}</div>
                 <div className="text-xs truncate" style={{ color: q.highlight ? T.amber : T.inkSoft }}>{q.sub}</div>
               </button>
@@ -3752,7 +3859,7 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
           {progInfo ? progInfo.label : program}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {progQuestions.length} question{progQuestions.length === 1 ? "" : "s"} across {groups.length} {isMBBS ? "year" : "subject"}{groups.length === 1 ? "" : "s"}
+          {groups.length} {isMBBS ? "year" : "subject"}{groups.length === 1 ? "" : "s"}
         </p>
 
         {groups.length === 0 ? (
@@ -3842,7 +3949,7 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome, isA
           {year}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {yearQuestions.length} question{yearQuestions.length === 1 ? "" : "s"} across {blocks.length} block{blocks.length === 1 ? "" : "s"}
+          {blocks.length} block{blocks.length === 1 ? "" : "s"}
         </p>
 
         {blocks.length === 0 ? (
@@ -3923,7 +4030,7 @@ function BlockPage({ program, year, block, bank, stats, onBack, onOpenSubject, o
           {year} · {block}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {blockQuestions.length} question{blockQuestions.length === 1 ? "" : "s"} across {subjects.length} subject{subjects.length === 1 ? "" : "s"}
+          {subjects.length} subject{subjects.length === 1 ? "" : "s"}
         </p>
 
         {subjects.length === 0 ? (
@@ -4011,7 +4118,7 @@ function TopicPage({ program, subject, bank, stats, onBack, onOpenTopic, onHome,
           {subject}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {subjQuestions.length} question{subjQuestions.length === 1 ? "" : "s"} across {topics.length} topic{topics.length === 1 ? "" : "s"}
+          {topics.length} topic{topics.length === 1 ? "" : "s"}
         </p>
 
         {topics.length === 0 ? (
@@ -4101,7 +4208,7 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
           {title}
         </h1>
         <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {totalQ} question{totalQ === 1 ? "" : "s"} across {rows.length} item{rows.length === 1 ? "" : "s"}
+          {rows.length} item{rows.length === 1 ? "" : "s"}
         </p>
 
         {rows.length === 0 ? (
@@ -4386,10 +4493,6 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {folder}
         </h1>
-        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {folderQuestions.length} question{folderQuestions.length === 1 ? "" : "s"} available
-        </p>
-
         <div className="mb-8">
           <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
             Number of questions (max {maxCount})
@@ -4430,7 +4533,54 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
 }
 
 // ---------- Subject setup (choose source + count) ----------
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, currentUserName, isAdmin, onDeleteMcqs }) {
+// Small inline "Reply" control admin sees under a student's comment — click to
+// reveal a text box, type, and submit. Kept collapsed by default so the thread
+// doesn't look cluttered for the common case of comments with no reply yet.
+function AdminReplyInline({ onSubmit }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="flex items-center gap-1 text-xs" style={{ color: T.blue }}>
+        <MessageCircle size={12} /> Reply
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 flex-1">
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && text.trim()) {
+            onSubmit(text.trim());
+            setText("");
+            setOpen(false);
+          }
+        }}
+        placeholder="Write a reply as admin…"
+        className="flex-1 px-2 py-1 text-xs"
+        style={{ border: `1px solid ${T.line}`, background: T.paper }}
+        autoFocus
+      />
+      <button
+        onClick={() => {
+          if (text.trim()) {
+            onSubmit(text.trim());
+            setText("");
+            setOpen(false);
+          }
+        }}
+        className="text-xs px-2 py-1"
+        style={{ background: T.ink, color: T.paper }}
+      >
+        Send
+      </button>
+    </div>
+  );
+}
+
+function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, onLikeDiscussion, onReplyDiscussion, onDeleteDiscussion, currentUserName, isAdmin, onDeleteMcqs }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -4491,10 +4641,6 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {subject}
         </h1>
-        <p className="text-sm mb-8" style={{ color: T.inkSoft }}>
-          {subjQuestions.length} question{subjQuestions.length === 1 ? "" : "s"} available
-        </p>
-
         <div className="mb-6">
           <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
             Source
@@ -4560,19 +4706,58 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
             {thread.length === 0 ? (
               <div className="text-sm" style={{ color: T.inkSoft }}>No questions asked yet — be the first!</div>
             ) : (
-              thread.map((c) => (
-                <div key={c.id} className="p-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
-                      {c.name}{currentUserName && c.name === currentUserName ? " (You)" : ""}
-                    </span>
-                    <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
-                      {new Date(c.createdAt).toLocaleDateString()}
-                    </span>
+              thread.map((c) => {
+                const liked = currentUserName && (c.likes || []).includes(currentUserName);
+                const likeCount = (c.likes || []).length;
+                return (
+                  <div key={c.id} className="p-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
+                        {c.name}{currentUserName && c.name === currentUserName ? " (You)" : ""}
+                      </span>
+                      <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                        {new Date(c.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div className="mb-2">{c.text}</div>
+
+                    {c.adminReply && (
+                      <div className="mt-2 mb-2 p-2 text-sm" style={{ background: T.paperDark || T.paper, borderLeft: `2px solid ${T.emerald}` }}>
+                        <div className="text-xs mb-1" style={{ color: T.emerald, fontFamily: "'IBM Plex Mono', monospace" }}>
+                          Admin reply
+                        </div>
+                        {c.adminReply.text}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => onLikeDiscussion(topicKey, c.id)}
+                        className="flex items-center gap-1 text-xs"
+                        style={{ color: liked ? T.emerald : T.inkSoft }}
+                      >
+                        <Star size={12} fill={liked ? T.emerald : "none"} /> {likeCount > 0 ? likeCount : "Like"}
+                      </button>
+                      {isAdmin && !c.adminReply && (
+                        <AdminReplyInline onSubmit={(text) => onReplyDiscussion(topicKey, c.id, text)} />
+                      )}
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm("Delete this comment? This cannot be undone.")) {
+                              onDeleteDiscussion(topicKey, c.id);
+                            }
+                          }}
+                          className="flex items-center gap-1 text-xs"
+                          style={{ color: T.rose }}
+                        >
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div>{c.text}</div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -5402,7 +5587,7 @@ function AdminGate({ onUnlock, onBack }) {
 }
 
 const EMPTY_NOTE_FORM = { program: "MDCAT", subject: "", title: "", type: "text", content: "" };
-const EMPTY_NOTIF_FORM = { title: "", message: "", sendPush: true };
+const EMPTY_NOTIF_FORM = { title: "", message: "", sendPush: true, program: "All" };
 
 // ---------- Admin: per-course WhatsApp Community links ----------
 // Reuses the same generic social-links key/value store as the WhatsApp Group /
@@ -5568,13 +5753,24 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
 
   // ---- Admin Dashboard: installs + daily usage ----
   const [dashLoading, setDashLoading] = useState(true);
-  const [dashData, setDashData] = useState({ installs: [], usage: [] });
+  const [dashData, setDashData] = useState({ installs: [], usage: [], error: null });
   const loadDashboard = async () => {
     setDashLoading(true);
     setDashData(await loadUsageDashboard());
     setDashLoading(false);
   };
   useEffect(() => { loadDashboard(); }, []);
+  // On-demand diagnostic: lets the admin check directly from the app whether
+  // usage tracking is actually reachable/writable, and see the exact error if not.
+  const [usageTestResult, setUsageTestResult] = useState(null);
+  const [usageTesting, setUsageTesting] = useState(false);
+  const runUsageTest = async () => {
+    setUsageTesting(true);
+    setUsageTestResult(null);
+    const res = await testUsageTracking();
+    setUsageTestResult(res);
+    setUsageTesting(false);
+  };
 
   // ---- Content Analytics: bank breakdown + cross-student weak topics ----
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
@@ -6690,8 +6886,20 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           <div className="max-w-2xl">
             <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-4">Send a notification</h2>
             <p className="text-sm mb-4" style={{ color: T.inkSoft }}>
-              Notifications go out to every student, regardless of which course they picked at signup.
+              Choose which course this notification goes to below — students only see notifications for their own course (plus "All courses" ones).
             </p>
+            <div className="mb-4">
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Send to</label>
+              <select
+                value={notifForm.program}
+                onChange={(e) => setNotifForm({ ...notifForm, program: e.target.value })}
+                className="w-full px-3 py-2"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              >
+                <option value="All">All courses</option>
+                {PROGRAMS.map((p) => <option key={p.key} value={p.key}>{p.key}</option>)}
+              </select>
+            </div>
             <div className="mb-3">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Title</label>
               <input
@@ -6778,7 +6986,10 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                       {n.createdAt ? new Date(n.createdAt).toLocaleString() : ""}
                     </div>
                     <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{n.title}</div>
-                    <div className="text-sm" style={{ color: T.inkSoft }}>{n.message}</div>
+                    <div className="text-sm mb-1" style={{ color: T.inkSoft }}>{n.message}</div>
+                    <div className="text-xs" style={{ color: T.amber, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      {!n.program || n.program === "All" ? "All courses" : n.program}
+                    </div>
                   </div>
                   <button onClick={() => removeNotification(n.id)} className="p-2 shrink-0" style={{ border: `1px solid ${T.rose}`, color: T.rose }}><Trash2 size={14} /></button>
                 </div>
@@ -6836,6 +7047,33 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               <button onClick={loadDashboard} className="flex items-center gap-1 text-xs px-3 py-1.5" style={{ border: `1px solid ${T.ink}` }}>
                 <RotateCcw size={12} /> Refresh
               </button>
+            </div>
+
+            {dashData.error && (
+              <div className="p-3 text-sm mb-4" style={{ background: T.roseSoft, color: T.rose }}>
+                Couldn't load usage data: {dashData.error}
+              </div>
+            )}
+            <div className="mb-6">
+              <button
+                onClick={runUsageTest}
+                disabled={usageTesting}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 disabled:opacity-50"
+                style={{ border: `1px solid ${T.line}`, color: T.inkSoft }}
+              >
+                {usageTesting ? "Testing…" : "Test usage tracking setup"}
+              </button>
+              {usageTestResult && (
+                <div
+                  className="p-3 text-sm mt-2"
+                  style={{
+                    background: usageTestResult.ok ? T.emeraldSoft : T.roseSoft,
+                    color: usageTestResult.ok ? T.emerald : T.rose,
+                  }}
+                >
+                  {usageTestResult.message}
+                </div>
+              )}
             </div>
             {dashLoading ? (
               <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>
@@ -7201,12 +7439,14 @@ export default function App() {
       if (user) {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
+        const displayCourse = user?.user_metadata?.course || null;
         setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
-        // Keep the leaderboard's `name` column in sync immediately on login (not just
-        // after the next quiz), so students who already have stats but signed up
-        // before "name" existed still show up once they log back in.
-        if (displayName && (!st || st.name !== displayName)) {
-          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName });
+        // Keep the leaderboard's `name` (and `course`) columns in sync immediately
+        // on login (not just after the next quiz), so students who already have
+        // stats but signed up before these existed still show up/get filtered
+        // correctly once they log back in.
+        if (displayName && (!st || st.name !== displayName || st.course !== displayCourse)) {
+          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName, course: displayCourse });
         }
       } else {
         setStats(emptyStats);
@@ -7436,8 +7676,8 @@ export default function App() {
       return;
     }
     if (shortfalls.length > 0) {
-      const lines = shortfalls.map((s) => `${s.subject}: have ${s.available}, need ${s.needed}`).join("\n");
-      alert(`Heads up — the question bank doesn't have enough MCQs yet for a full ${progLabel} paper:\n${lines}\n\nStarting with what's available (${questions.length} questions).`);
+      const lines = shortfalls.map((s) => `${s.subject} is short on questions`).join("\n");
+      alert(`Heads up — the question bank doesn't have enough MCQs yet for a full ${progLabel} paper:\n${lines}\n\nStarting with what's available.`);
     }
     setQuizQuestions(questions);
     setQuizMeta({ label: `${progLabel} — Full Length Paper`, timeLimit: config.timeSeconds, mode: "flp", flpProgram: program });
@@ -7447,7 +7687,7 @@ export default function App() {
   const toggleBookmark = async (qid) => {
     const current = stats?.bookmarks || [];
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
-    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "" };
+    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "", course: user?.user_metadata?.course || stats?.course || null };
     setStats(nextStats);
     if (user) {
       await saveUserStats(user.id, nextStats);
@@ -7456,9 +7696,35 @@ export default function App() {
     }
   };
 
-  // ---- Reviews: any signed-in student can add one; visible to everyone ----
+  // ---- Reviews: any signed-in student can add one; visible to students of
+  // the same course, and to admin (across all courses, for moderation) ----
   const addReview = async (review) => {
-    const next = [...reviews, { ...review, id: uid(), createdAt: new Date().toISOString() }];
+    const next = [...reviews, { ...review, id: uid(), program: userCourse || null, createdAt: new Date().toISOString(), likes: [], adminReply: null }];
+    setReviews(next);
+    await saveReviews(next);
+  };
+  const likeReview = async (reviewId) => {
+    const who = user?.user_metadata?.name || user?.email || "Anonymous";
+    const next = reviews.map((r) => {
+      if (r.id !== reviewId) return r;
+      const likes = r.likes || [];
+      const already = likes.includes(who);
+      return { ...r, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
+    });
+    setReviews(next);
+    await saveReviews(next);
+  };
+  // Admin-only: reply to a student's review.
+  const replyToReview = async (reviewId, text) => {
+    const next = reviews.map((r) =>
+      r.id === reviewId ? { ...r, adminReply: { text, createdAt: new Date().toISOString() } } : r
+    );
+    setReviews(next);
+    await saveReviews(next);
+  };
+  // Admin-only: delete a review entirely.
+  const deleteReview = async (reviewId) => {
+    const next = reviews.filter((r) => r.id !== reviewId);
     setReviews(next);
     await saveReviews(next);
   };
@@ -7542,8 +7808,46 @@ export default function App() {
       name: user?.user_metadata?.name || user?.email || "Anonymous",
       text,
       createdAt: new Date().toISOString(),
+      likes: [],
+      adminReply: null,
     };
     const nextThread = [...(discussions[topicKey] || []), entry];
+    const next = { ...discussions, [topicKey]: nextThread };
+    setDiscussions(next);
+    await saveDiscussions(next);
+  };
+
+  // Toggles a like from the current student on one comment. Uses the student's
+  // own name/email as the "who liked this" key (same identity already used for
+  // posting comments) so a person can't stack up multiple likes on one comment.
+  const likeDiscussion = async (topicKey, commentId) => {
+    const who = user?.user_metadata?.name || user?.email || "Anonymous";
+    const nextThread = (discussions[topicKey] || []).map((c) => {
+      if (c.id !== commentId) return c;
+      const likes = c.likes || [];
+      const already = likes.includes(who);
+      return { ...c, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
+    });
+    const next = { ...discussions, [topicKey]: nextThread };
+    setDiscussions(next);
+    await saveDiscussions(next);
+  };
+
+  // Admin-only: reply to a student's comment/doubt.
+  const replyToDiscussion = async (topicKey, commentId, replyText) => {
+    const nextThread = (discussions[topicKey] || []).map((c) =>
+      c.id === commentId
+        ? { ...c, adminReply: { text: replyText, createdAt: new Date().toISOString() } }
+        : c
+    );
+    const next = { ...discussions, [topicKey]: nextThread };
+    setDiscussions(next);
+    await saveDiscussions(next);
+  };
+
+  // Admin-only: delete a comment entirely (and its reply/likes with it).
+  const deleteDiscussion = async (topicKey, commentId) => {
+    const nextThread = (discussions[topicKey] || []).filter((c) => c.id !== commentId);
     const next = { ...discussions, [topicKey]: nextThread };
     setDiscussions(next);
     await saveDiscussions(next);
@@ -7690,6 +7994,7 @@ export default function App() {
       name: user?.user_metadata?.name || stats?.name || "",
       flpUsed,
       history: trimmedHistory,
+      course: user?.user_metadata?.course || stats?.course || null,
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -7770,11 +8075,14 @@ export default function App() {
         onOpenLeaderboard={() => setView("leaderboard")}
         onOpenFLP={openFLP}
         notesBank={notesBank}
-        notifications={notifications}
+        notifications={notifications.filter((n) => !n.program || n.program === "All" || n.program === userCourse)}
         onRefreshNotifications={refreshNotifications}
         isAdmin={adminUnlocked}
         reviews={reviews}
         onAddReview={addReview}
+        onLikeReview={likeReview}
+        onReplyReview={replyToReview}
+        onDeleteReview={deleteReview}
         syllabusItems={syllabusItems}
         onAddSyllabus={addSyllabusItem}
         onRemoveSyllabus={removeSyllabusItem}
@@ -7796,7 +8104,7 @@ export default function App() {
     );
   }
   if (view === "leaderboard") {
-    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} />;
+    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} userCourse={userCourse} />;
   }
   if (view === "admin-gate") {
     return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={() => setView("home")} />;
@@ -7921,6 +8229,9 @@ export default function App() {
         onHome={() => setView("home")}
         discussions={discussions}
         onPostDiscussion={postDiscussion}
+        onLikeDiscussion={likeDiscussion}
+        onReplyDiscussion={replyToDiscussion}
+        onDeleteDiscussion={deleteDiscussion}
         currentUserName={user?.user_metadata?.name || ""}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
