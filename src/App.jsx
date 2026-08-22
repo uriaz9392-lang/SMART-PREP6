@@ -906,7 +906,7 @@ const PROGRAMS = [
     key: "MBBS", label: "MBBS", icon: Stethoscope, tagline: "Learn. Understand. Serve.",
     gradient: "linear-gradient(135deg, #0F2A5C, #1B3F7A)",
     links: [
-      { label: "Semester", icon: Library, action: "open" },
+      { label: "Year", icon: Library, action: "open" },
       { label: "Practice MCQS", icon: ClipboardCheck, action: "open" },
       { label: "Clinical Cases", icon: FlaskRound, action: "soon" },
     ],
