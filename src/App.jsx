@@ -1571,25 +1571,35 @@ let lastKnownBankVersion = null;
 // connection (a few hundred KB/s or less) a multi-MB payload needs more room
 // to eventually get through than 3 quick retries gave it.
 async function pushBankToCdn(bank, attempt = 1) {
+  let lastError = null;
   try {
+    const body = JSON.stringify(bank);
     const cdnRes = await fetch(`${CDN_BASE}/bank`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", "x-admin-key": CDN_ADMIN_KEY },
-      body: JSON.stringify(bank),
+      body,
     });
     if (cdnRes.ok) {
       const cdnData = await cdnRes.json();
-      return typeof cdnData.version === "number" ? cdnData.version : null;
+      return { version: typeof cdnData.version === "number" ? cdnData.version : null, error: null };
     }
-    console.error("CDN bank push failed with status:", cdnRes.status);
+    // Try to read the response body for a real reason (e.g. Cloudflare KV's
+    // 25MB per-value limit being hit as the bank grows) instead of just a
+    // status code — this is what actually shows up in the "sync failed"
+    // alert now, so it says WHY instead of just "check your connection".
+    let bodyText = "";
+    try { bodyText = await cdnRes.text(); } catch {}
+    lastError = `HTTP ${cdnRes.status}${bodyText ? ": " + bodyText.slice(0, 200) : ""}`;
+    console.error("CDN bank push failed with status:", cdnRes.status, bodyText);
   } catch (e) {
+    lastError = e?.message || String(e);
     console.error("CDN bank push failed:", e);
   }
   if (attempt < 5) {
     await new Promise((r) => setTimeout(r, Math.min(attempt * 2000, 8000)));
     return pushBankToCdn(bank, attempt + 1);
   }
-  return null;
+  return { version: null, error: lastError };
 }
 
 async function saveBank(bank, opts = {}) {
@@ -1667,7 +1677,7 @@ async function saveBank(bank, opts = {}) {
     // Supabase above is still the real save — if this CDN push fails, the
     // data is NOT lost, students just keep serving the previous CDN copy
     // until the next successful save retries this.
-    const cdnVersion = await pushBankToCdn(bank);
+    const { version: cdnVersion } = await pushBankToCdn(bank);
     if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
   }
   return ok;
@@ -6078,7 +6088,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = await pushBankToCdn(next);
+      const cdnVersion = (await pushBankToCdn(next)).version;
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
@@ -6102,13 +6112,13 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const syncToCdn = async () => {
     setCdnSyncing(true);
     try {
-      const cdnVersion = await pushBankToCdn(bank);
+      const { version: cdnVersion, error: cdnError } = await pushBankToCdn(bank);
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         lastKnownBankLength = bank.length;
         alert(`Synced ${bank.length} question(s) to the CDN.`);
       } else {
-        alert("CDN sync failed — check your internet connection and try again.");
+        alert(`CDN sync failed: ${cdnError || "unknown error"}`);
       }
     } finally {
       setCdnSyncing(false);
@@ -6131,7 +6141,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = await pushBankToCdn(next);
+      const cdnVersion = (await pushBankToCdn(next)).version;
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
@@ -7858,7 +7868,7 @@ export default function App() {
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = await pushBankToCdn(next);
+      const cdnVersion = (await pushBankToCdn(next)).version;
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
