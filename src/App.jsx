@@ -2103,7 +2103,7 @@ function ContentListPage({ title, icon: Icon, color, items, isAdmin, onAdd, onRe
 }
 
 // ---------- Reviews: every signed-in student can post one, everyone can read all of them ----------
-function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDelete, onSetProgram, isAdmin }) {
+function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDelete, onToggleProgram, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [rating, setRating] = useState(5);
   const [text, setText] = useState("");
@@ -2183,17 +2183,33 @@ function ReviewsPage({ onBack, reviews, userName, onAdd, onLike, onReply, onDele
                 <div className="text-sm mb-2" style={{ color: T.inkSoft }}>{r.text}</div>
 
                 {isAdmin && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>Course:</span>
-                    <select
-                      value={r.program || ""}
-                      onChange={(e) => onSetProgram(r.id, e.target.value || null)}
-                      className="text-xs px-2 py-1"
-                      style={{ border: `1px solid ${r.program ? T.line : T.rose}`, background: T.paper, color: r.program ? T.ink : T.rose }}
-                    >
-                      <option value="">Unassigned — hidden from students</option>
-                      {COURSES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                    </select>
+                  <div className="mb-2">
+                    <div className="text-xs mb-1" style={{ color: (r.programs || (r.program ? [r.program] : [])).length ? T.inkSoft : T.rose, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      Visible to: {(r.programs || (r.program ? [r.program] : [])).length ? (r.programs || [r.program]).join(", ") : "nobody — unassigned"}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(() => {
+                        const current = r.programs || (r.program ? [r.program] : []);
+                        return (
+                          <>
+                            <label className="flex items-center gap-1 text-xs px-2 py-1 cursor-pointer select-none" style={{ border: `1px solid ${current.includes("All") ? T.emerald : T.line}`, color: current.includes("All") ? T.emerald : T.inkSoft }}>
+                              <input type="checkbox" checked={current.includes("All")} onChange={() => onToggleProgram(r.id, "All")} className="hidden" />
+                              All courses
+                            </label>
+                            {COURSES.map((c) => (
+                              <label
+                                key={c.key}
+                                className="flex items-center gap-1 text-xs px-2 py-1 cursor-pointer select-none"
+                                style={{ border: `1px solid ${current.includes(c.key) ? T.emerald : T.line}`, color: current.includes(c.key) ? T.emerald : T.inkSoft, opacity: current.includes("All") ? 0.4 : 1 }}
+                              >
+                                <input type="checkbox" checked={current.includes(c.key)} disabled={current.includes("All")} onChange={() => onToggleProgram(r.id, c.key)} className="hidden" />
+                                {c.label}
+                              </label>
+                            ))}
+                          </>
+                        );
+                      })()}
+                    </div>
                   </div>
                 )}
 
@@ -3070,7 +3086,7 @@ function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
   onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
   notesBank, notifications, onRefreshNotifications, isAdmin,
-  reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview, onSetReviewProgram,
+  reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview, onToggleReviewProgram,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
   guidelineItems, onAddGuideline, onRemoveGuideline,
   contactItems, onAddContact, onRemoveContact,
@@ -3412,13 +3428,16 @@ function Home({
     );
   }
   if (navTab === "reviews") {
-    // Students only see reviews tagged with their own course. A review with
-    // no course tag (written before this feature existed) is now admin-only
-    // until the admin assigns it a course from the Reviews page — it no
+    // Students only see reviews tagged with their own course, or tagged "All".
+    // A review with no course tags at all (written before this feature
+    // existed) is now admin-only until the admin assigns it a course — it no
     // longer leaks to every student by default.
     const visibleReviews = isAdmin
       ? reviews
-      : reviews.filter((r) => r.program === userCourse);
+      : reviews.filter((r) => {
+          const programs = r.programs || (r.program ? [r.program] : []);
+          return programs.includes("All") || programs.includes(userCourse);
+        });
     return (
       <>
         <ReviewsPage
@@ -3429,7 +3448,7 @@ function Home({
           onLike={onLikeReview}
           onReply={onReplyReview}
           onDelete={onDeleteReview}
-          onSetProgram={onSetReviewProgram}
+          onToggleProgram={onToggleReviewProgram}
           isAdmin={isAdmin}
         />
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
@@ -7716,7 +7735,7 @@ export default function App() {
   // ---- Reviews: any signed-in student can add one; visible to students of
   // the same course, and to admin (across all courses, for moderation) ----
   const addReview = async (review) => {
-    const next = [...reviews, { ...review, id: uid(), program: userCourse || null, createdAt: new Date().toISOString(), likes: [], adminReply: null }];
+    const next = [...reviews, { ...review, id: uid(), programs: userCourse ? [userCourse] : [], createdAt: new Date().toISOString(), likes: [], adminReply: null }];
     setReviews(next);
     await saveReviews(next);
   };
@@ -7739,12 +7758,25 @@ export default function App() {
     setReviews(next);
     await saveReviews(next);
   };
-  // Admin-only: assign/change which course a review belongs to. Mainly for
-  // reviews written before per-course tagging existed — those started out
-  // admin-only (no course tag), and this is how the admin puts them in front
-  // of the right students, or fixes a wrongly-tagged one.
-  const setReviewProgram = async (reviewId, program) => {
-    const next = reviews.map((r) => (r.id === reviewId ? { ...r, program } : r));
+  // Admin-only: toggle whether a review is visible to a given course (or to
+  // "All" courses at once). A review can be assigned to any combination of
+  // courses — not just one — which is also how the admin puts an old,
+  // pre-tagging review (which starts out with no courses, i.e. admin-only)
+  // in front of the right students. Picking "All" clears individual course
+  // picks (and vice versa), since they'd be redundant together.
+  const toggleReviewProgram = async (reviewId, courseKey) => {
+    const next = reviews.map((r) => {
+      if (r.id !== reviewId) return r;
+      const current = r.programs || (r.program ? [r.program] : []);
+      let updated;
+      if (courseKey === "All") {
+        updated = current.includes("All") ? [] : ["All"];
+      } else {
+        const withoutAll = current.filter((c) => c !== "All");
+        updated = withoutAll.includes(courseKey) ? withoutAll.filter((c) => c !== courseKey) : [...withoutAll, courseKey];
+      }
+      return { ...r, programs: updated, program: undefined };
+    });
     setReviews(next);
     await saveReviews(next);
   };
@@ -8109,7 +8141,7 @@ export default function App() {
         onLikeReview={likeReview}
         onReplyReview={replyToReview}
         onDeleteReview={deleteReview}
-        onSetReviewProgram={setReviewProgram}
+        onToggleReviewProgram={toggleReviewProgram}
         syllabusItems={syllabusItems}
         onAddSyllabus={addSyllabusItem}
         onRemoveSyllabus={removeSyllabusItem}
