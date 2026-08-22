@@ -1606,6 +1606,17 @@ async function saveBank(bank, opts = {}) {
   // Checks Supabase's own bank_version directly — NOT the CDN's separate version
   // counter — so a slow/flaky connection to the CDN can never cause this to
   // fire against our own edits.
+  //
+  // Fails CLOSED on a network error here (blocks the save) rather than fails
+  // open. This used to fail open — proceed with the save if the check itself
+  // couldn't be reached — on the theory that a transient network hiccup
+  // shouldn't block an edit. In practice, on a slow/unstable connection that
+  // meant: an admin tab left open with an older, in-memory copy of the bank
+  // (e.g. from before another device added a new program's questions) could
+  // silently overwrite the live bank with that stale copy whenever this
+  // specific check happened to fail to reach Supabase — with no warning.
+  // That's a much worse outcome than occasionally asking the admin to retry
+  // a save, so this now blocks whenever the check can't be verified.
   if (!opts.force && lastKnownSupabaseBankVersion !== null) {
     try {
       const { data, error } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
@@ -1619,9 +1630,12 @@ async function saveBank(bank, opts = {}) {
         return "stale";
       }
     } catch (e) {
-      // If we can't even check, fail safe by allowing the save through rather than
-      // blocking all edits over a transient network hiccup.
-      console.error("Could not verify bank_version before saving (proceeding anyway):", e);
+      console.error("Could not verify bank_version before saving — blocking this save rather than risking an overwrite:", e);
+      alert(
+        "Couldn't confirm this is the latest version of the question bank (connection issue) — nothing was saved, " +
+        "to avoid the risk of overwriting a change made elsewhere. Please check your connection and try again."
+      );
+      return "stale";
     }
   }
   const ok = await saveSharedData({ bank });
