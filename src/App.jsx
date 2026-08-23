@@ -7701,7 +7701,11 @@ export default function App() {
   };
 
   const openDailyChallenge = () => {
-    const picked = seededShuffle(bank, todayStr()).slice(0, Math.min(10, bank.length));
+    // Only pull from the student's own course — previously this pulled from
+    // the entire bank, so e.g. an MBBS student's Daily Challenge could include
+    // MDCAT/KMU CAT questions instead of MBBS ones.
+    const courseBank = userCourse ? bank.filter((q) => q.program === userCourse) : bank;
+    const picked = seededShuffle(courseBank, todayStr()).slice(0, Math.min(10, courseBank.length));
     startSpecialQuiz(picked, "Daily Challenge", "daily", "No questions available yet — check back once the bank has some MCQs.");
   };
 
