@@ -496,6 +496,71 @@ export async function saveGuidelineItems(guidelines) {
   }
 }
 
+// ---- FLP (Full Length Paper) tests: fixed, admin-built papers ----
+// Each test is a FIXED set of question ids chosen once by the admin (either a
+// one-time random draw by subject-breakdown, or hand-picked) — never
+// reshuffled per student or per attempt, so "First Year Full Course Test" is
+// the same paper for everyone who takes it, like a real exam.
+export async function loadFLPTests() {
+  try {
+    const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return (data && data.flp_tests) || [];
+  } catch (e) {
+    console.error("Load FLP tests failed (add a 'flp_tests' jsonb column to app_data):", e);
+    return [];
+  }
+}
+export async function saveFLPTests(flpTests) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ flp_tests: flpTests }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, flp_tests: flpTests });
+      if (insertError) throw insertError;
+    }
+    return true;
+  } catch (e) {
+    console.error("Save FLP tests failed (add a 'flp_tests' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
+// ---- FLP attempts: one row per student per submitted paper, so admin can
+// see who took which test and what they scored. Separate Supabase table
+// (not app_data) since this grows over time and admin needs to query/filter
+// it, unlike the small admin-managed lists above.
+export async function saveFLPAttempt(attempt) {
+  try {
+    const { error } = await supabase.from("flp_attempts").insert({
+      user_id: attempt.userId,
+      name: attempt.name || "",
+      program: attempt.program,
+      test_id: attempt.testId,
+      test_title: attempt.testTitle,
+      score: attempt.score,
+      total: attempt.total,
+    });
+    if (error) throw error;
+  } catch (e) {
+    console.error("Save FLP attempt failed (create the 'flp_attempts' table — see comment near its usage):", e);
+  }
+}
+export async function loadFLPAttempts() {
+  try {
+    const { data, error } = await supabase
+      .from("flp_attempts")
+      .select("id, user_id, name, program, test_id, test_title, score, total, created_at")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (error) throw error;
+    return data || [];
+  } catch (e) {
+    console.error("Load FLP attempts failed:", e);
+    return [];
+  }
+}
+
 // ---- Contact items (admin-authored links: WhatsApp, phone, email, groups, etc.) ----
 // Requires a `contact_items` jsonb column on the `app_data` table (default value []).
 export async function loadContactItems() {
@@ -1370,36 +1435,10 @@ function DeleteMcqsButton({ label, ids, onDelete, size = 16, className = "" }) {
   );
 }
 
-// ---------- FLP (Full Length Paper) — auto-generated exam blueprints ----------
-// For each program: total question count, total time (in seconds), and how many
-// questions come from each subject. MBBS and BSN are left unconfigured for now
-// (set to null) — their FLP folders show "coming soon" until numbers are provided.
-const FLP_CONFIG = {
-  MDCAT: {
-    totalMcqs: 180,
-    timeSeconds: 3 * 60 * 60, // 3 hours
-    breakdown: {
-      Biology: 81,
-      Chemistry: 45,
-      Physics: 36,
-      English: 9,
-      "Logical Reasoning": 9,
-    },
-  },
-  KMUCAT: {
-    totalMcqs: 100,
-    timeSeconds: 1 * 60 * 60, // 1 hour
-    breakdown: {
-      Biology: 45,
-      Chemistry: 25,
-      Physics: 20,
-      English: 5,
-      "Logical Reasoning": 5,
-    },
-  },
-  MBBS: null, // configuration to be provided later
-  BSN: null, // configuration to be provided later
-};
+// ---------- FLP (Full Length Paper) — fixed, admin-built exam papers ----------
+// Only offered for MDCAT and KMU CAT (per the admin's request) — MBBS/BSN
+// don't show an FLP tab at all.
+const FLP_PROGRAMS = ["MDCAT", "KMUCAT"];
 
 const SEED_MCQS = [
   { id: "s1", program: "MDCAT", subject: "Biology", topic: "Cell Biology", source: "Practice",
@@ -1812,35 +1851,24 @@ function shuffleQuestionOptions(q) {
   return { ...q, options: order.map((i) => q.options[i]), correct: order.indexOf(q.correct) };
 }
 
-// ---------- FLP (Full Length Paper) auto-generator ----------
-// Builds one full-length paper for `program` using FLP_CONFIG's subject breakdown.
-// For each subject it prefers MCQs the student hasn't seen in a previous FLP attempt
-// (tracked via usedIds, a Set of question ids from stats.flpUsed[program]). Once every
-// question in a subject has been used at least once, that subject's "unused" pool
-// automatically resets for this generation — so it cycles through fresh sets over time
-// instead of ever getting stuck. Returns { questions, shortfalls } where shortfalls
-// lists any subject that doesn't yet have enough MCQs in the bank to fully meet its quota.
-function buildFLPExam(bank, program, usedIds) {
-  const config = FLP_CONFIG[program];
-  if (!config) return { questions: [], shortfalls: [] };
-  const used = usedIds instanceof Set ? usedIds : new Set(usedIds || []);
+// ---------- FLP one-time question draw (used only when admin creates a test) ----------
+// Randomly draws `needed` questions per subject from `breakdown` for `program`,
+// ONE TIME, when the admin creates the test. The resulting question ids are then
+// saved as a fixed list on the test itself (see saveFLPTests) — every student who
+// opens this test from then on gets that exact same paper, nothing is drawn again
+// per attempt. Returns { questionIds, shortfalls } where shortfalls lists any
+// subject that didn't have enough MCQs in the bank yet to meet its quota.
+function drawFLPQuestions(bank, program, breakdown) {
   const shortfalls = [];
-  let questions = [];
-
-  Object.entries(config.breakdown).forEach(([subject, needed]) => {
+  let questionIds = [];
+  Object.entries(breakdown).forEach(([subject, needed]) => {
+    if (!needed) return;
     const pool = bank.filter((q) => q.program === program && q.subject === subject);
-    let unused = pool.filter((q) => !used.has(q.id));
-    // Every question in this subject has already appeared in a past FLP — start a fresh cycle.
-    if (unused.length === 0 && pool.length > 0) unused = pool;
-
-    const picked = shuffleArray(unused).slice(0, needed);
-    if (picked.length < needed) {
-      shortfalls.push({ subject, needed, available: pool.length });
-    }
-    questions = questions.concat(picked);
+    const picked = shuffleArray(pool).slice(0, needed);
+    if (picked.length < needed) shortfalls.push({ subject, needed, available: pool.length });
+    questionIds = questionIds.concat(picked.map((q) => q.id));
   });
-
-  return { questions, shortfalls };
+  return { questionIds, shortfalls };
 }
 
 // ---------- WhatsApp brand icon ----------
@@ -1897,11 +1925,13 @@ function Bubble({ letter, state, onClick, disabled }) {
 }
 
 // ---------- Bottom Nav ----------
-function BottomNav({ tab, setTab, onSaved }) {
+function BottomNav({ tab, setTab, onSaved, userCourse }) {
   const items = [
     { key: "home", label: "Home", icon: HomeIcon },
     { key: "pastpapers", label: "Past Papers", icon: FileText },
-    { key: "flp", label: "FLP", icon: FileCheck2 },
+    // FLP only exists for MDCAT and KMU CAT — hidden from the nav entirely
+    // for every other course instead of showing an empty/"coming soon" tab.
+    ...(FLP_PROGRAMS.includes(userCourse) ? [{ key: "flp", label: "FLP", icon: FileCheck2 }] : []),
     { key: "notes", label: "Notes", icon: BookOpen },
     { key: "saved", label: "Saved", icon: Bookmark },
   ];
@@ -3108,7 +3138,7 @@ function NotificationPermissionRow({ userId, userCourse }) {
 
 function Home({
   bank, programs, onOpenProgram, onOpenAdmin, stats, showAdminEntry, userEmail, userName, userCourse,
-  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP,
+  onSignOut, onDailyChallenge, onReviewMistakes, onOpenSaved, onOpenLeaderboard, onOpenFLP, flpTests,
   notesBank, notifications, onRefreshNotifications, isAdmin,
   reviews, onAddReview, onLikeReview, onReplyReview, onDeleteReview, onToggleReviewProgram,
   syllabusItems, onAddSyllabus, onRemoveSyllabus,
@@ -3256,7 +3286,7 @@ function Home({
     return (
       <>
         <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} isAdmin={isAdmin} onAddNote={onAddNote} />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </>
     );
   }
@@ -3288,54 +3318,53 @@ function Home({
             })}
           </div>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
   }
   if (navTab === "flp") {
-    const FLP_ICON_COLORS = { MDCAT: "#2E63D6", KMUCAT: "#7C5CD6", BSN: "#1F9D6B", MBBS: "#B5822A" };
+    const FLP_ICON_COLORS = { MDCAT: "#2E63D6", KMUCAT: "#7C5CD6" };
+    const myTests = flpTests.filter((t) => t.program === userCourse);
     return (
       <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
         <FontLoader />
         <div className="max-w-5xl mx-auto px-6 py-10">
           <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-2">Full Length Paper</h2>
           <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-            Pick a program to auto-generate a full length paper from the question bank, timed and subject-weighted like the real exam.
+            Fixed, timed papers set by your admin — same paper for everyone, just like the real exam.
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {programs.map((p) => {
-              const Icon = p.icon;
-              const config = FLP_CONFIG[p.key];
-              return (
+          {myTests.length === 0 ? (
+            <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+              No Full Length Papers have been added for your course yet — check back soon.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {myTests.map((t) => (
                 <button
-                  key={p.key}
-                  onClick={() => onOpenFLP(p.key)}
+                  key={t.id}
+                  onClick={() => onOpenFLP(t)}
                   className="text-left p-5 flex items-center gap-4"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
                     className="flex items-center justify-center shrink-0"
-                    style={{ width: 48, height: 48, borderRadius: "50%", background: FLP_ICON_COLORS[p.key] || T.blue }}
+                    style={{ width: 48, height: 48, borderRadius: "50%", background: FLP_ICON_COLORS[t.program] || T.blue }}
                   >
-                    <Icon size={22} style={{ color: "#fff" }} />
+                    <FileCheck2 size={22} style={{ color: "#fff" }} />
                   </div>
                   <div className="flex-1">
-                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
-                    {config ? (
-                      <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
-                        {config.totalMcqs} MCQs · {Math.round(config.timeSeconds / 60)} min
-                      </div>
-                    ) : (
-                      <div className="text-xs mt-1" style={{ color: T.inkSoft }}>Coming soon</div>
-                    )}
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.title}</div>
+                    <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                      {t.questionIds.length} MCQs · {Math.round(t.timeSeconds / 60)} min
+                    </div>
                   </div>
                   <ChevronRight size={16} style={{ color: T.inkSoft }} />
                 </button>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
   }
@@ -3431,7 +3460,7 @@ function Home({
             </div>
           )}
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
   }
@@ -3447,7 +3476,7 @@ function Home({
           socialLinks={socialLinks}
           onUpdateSocialLink={onUpdateSocialLink}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </>
     );
   }
@@ -3475,7 +3504,7 @@ function Home({
           onToggleProgram={onToggleReviewProgram}
           isAdmin={isAdmin}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </>
     );
   }
@@ -3495,7 +3524,7 @@ function Home({
           emptyText="The syllabus breakdown will appear here soon."
           programs={programs}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </>
     );
   }
@@ -3515,7 +3544,7 @@ function Home({
           emptyText="Exam & app guidelines will appear here soon."
           programs={programs}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </>
     );
   }
@@ -3564,7 +3593,7 @@ function Home({
             <LogOut size={14} /> Sign out
           </button>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
   }
@@ -3623,7 +3652,7 @@ function Home({
             <LogOut size={14} /> Sign out
           </button>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
   }
@@ -3841,7 +3870,7 @@ function Home({
         )}
       </main>
 
-      <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} />
+      <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
     </div>
   );
 }
@@ -4919,7 +4948,7 @@ function QuestionFeedbackBar({ question, feedback, onVote, onReport }) {
   );
 }
 
-function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion }) {
+function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion, deferFeedback }) {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
   const [answerTimes, setAnswerTimes] = useState({});
@@ -4931,7 +4960,12 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   const shuffledQuestions = useMemo(() => questions.map(shuffleQuestionOptions), [questions]);
   const q = shuffledQuestions[idx];
   const letters = ["A", "B", "C", "D"];
-  const revealed = answers[idx] !== undefined;
+  const hasAnswered = answers[idx] !== undefined;
+  // In FLP mode, right/wrong and the explanation stay hidden until the whole
+  // paper is submitted — same as a real exam. Everywhere else (normal
+  // practice, past papers, etc.) feedback still shows the moment you pick an
+  // option, same as before.
+  const revealed = hasAnswered && !deferFeedback;
   const isCorrect = revealed && answers[idx] === q.correct;
   const isBookmarked = bookmarks && q ? bookmarks.includes(q.id) : false;
 
@@ -4940,7 +4974,7 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   }, [idx]);
 
   const select = (i) => {
-    if (revealed) return;
+    if (revealed) return; // locked once feedback is shown; in FLP mode this never locks, so the answer can be changed until Submit
     const elapsedSeconds = Math.round((Date.now() - questionStartedAt) / 1000);
     setAnswers((a) => ({ ...a, [idx]: i }));
     setAnswerTimes((t) => ({ ...t, [idx]: elapsedSeconds }));
@@ -5700,7 +5734,7 @@ function AdminCommunityLinksPanel({ socialLinks, onUpdateSocialLink }) {
   );
 }
 
-function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit, isDark, onToggleTheme, socialLinks, onUpdateSocialLink, pushSubscriberCount, onSendPush, dailyReminder, onUpdateDailyReminder }) {
+function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit, isDark, onToggleTheme, socialLinks, onUpdateSocialLink, pushSubscriberCount, onSendPush, dailyReminder, onUpdateDailyReminder, flpTests, onSaveFLPTests }) {
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -5719,6 +5753,11 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [notePdfUploading, setNotePdfUploading] = useState(false);
   const [notifForm, setNotifForm] = useState(EMPTY_NOTIF_FORM);
+  const [flpForm, setFlpForm] = useState({ title: "", program: "MDCAT", timeMinutes: 180, breakdown: {} });
+  const [flpCreating, setFlpCreating] = useState(false);
+  const [flpAttempts, setFlpAttempts] = useState([]);
+  const [flpAttemptsLoading, setFlpAttemptsLoading] = useState(false);
+  const [flpResultsFilter, setFlpResultsFilter] = useState("");
 
   const saveNoteForm = async () => {
     if (!noteForm.subject.trim() || !noteForm.title.trim() || !noteForm.content.trim()) {
@@ -5791,6 +5830,54 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       alert("Could not delete this notification — check your internet connection and try again.");
     }
   };
+
+  // ---- FLP tests: admin builds a fixed paper (one-time random draw by subject) ----
+  const flpSubjectsForProgram = useMemo(
+    () => Array.from(new Set(bank.filter((q) => q.program === flpForm.program).map((q) => q.subject))).sort(),
+    [bank, flpForm.program]
+  );
+  const createFLPTest = async () => {
+    if (!flpForm.title.trim()) {
+      alert("Please give this paper a title.");
+      return;
+    }
+    const breakdown = {};
+    Object.entries(flpForm.breakdown).forEach(([subject, count]) => {
+      const n = Number(count) || 0;
+      if (n > 0) breakdown[subject] = n;
+    });
+    if (Object.keys(breakdown).length === 0) {
+      alert("Set at least one subject's MCQ count above 0.");
+      return;
+    }
+    setFlpCreating(true);
+    const { questionIds, shortfalls } = drawFLPQuestions(bank, flpForm.program, breakdown);
+    if (questionIds.length === 0) {
+      setFlpCreating(false);
+      alert("No matching questions found in the bank for this program/subject combination.");
+      return;
+    }
+    if (shortfalls.length > 0) {
+      const lines = shortfalls.map((s) => `${s.subject}: needed ${s.needed}, only ${s.available} available`).join("\n");
+      alert(`Heads up — some subjects didn't have enough MCQs, so this paper is smaller than planned:\n${lines}`);
+    }
+    const test = {
+      id: uid(),
+      title: flpForm.title.trim(),
+      program: flpForm.program,
+      timeSeconds: Math.max(1, Number(flpForm.timeMinutes) || 1) * 60,
+      questionIds,
+      createdAt: new Date().toISOString(),
+    };
+    await onSaveFLPTests([...flpTests, test]);
+    setFlpForm({ title: "", program: flpForm.program, timeMinutes: 180, breakdown: {} });
+    setFlpCreating(false);
+  };
+  const deleteFLPTest = async (id) => {
+    if (!window.confirm("Delete this paper? Students will no longer be able to open it. Past results for it are kept.")) return;
+    await onSaveFLPTests(flpTests.filter((t) => t.id !== id));
+  };
+
 
   // ---- Exam countdown dates ----
   const [examDates, setExamDates] = useState({});
@@ -6237,6 +6324,8 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             { k: "notifications", label: "Notifications" },
             { k: "community", label: "Community Links" },
             { k: "examdates", label: "Exam Dates" },
+            { k: "flp", label: "FLP Tests" },
+            { k: "flpresults", label: "FLP Results" },
             { k: "dashboard", label: "Dashboard" },
             { k: "analytics", label: "Analytics" },
             { k: "reports", label: `Reports${openReports.length > 0 ? ` (${openReports.length})` : ""}` },
@@ -7098,6 +7187,193 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           </div>
         )}
 
+        {tab === "flp" && (
+          <div className="max-w-3xl">
+            <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl mb-2 flex items-center gap-2">
+              <FileCheck2 size={18} /> Full Length Paper Tests
+            </h2>
+            <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
+              Build a fixed paper — the questions are drawn once, right now, from the bank
+              by subject count, and then stay exactly the same for every student who opens
+              it (like a real, printed exam). Only offered to MDCAT and KMU CAT.
+            </p>
+
+            <div className="p-5 mb-8" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Title
+              </label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {["First Year Full Course Test", "2nd Year Full Course Test", "Full Course Test"].map((preset) => (
+                  <button
+                    key={preset}
+                    onClick={() => setFlpForm({ ...flpForm, title: preset })}
+                    className="text-xs px-2 py-1"
+                    style={{ border: `1px solid ${flpForm.title === preset ? T.ink : T.line}`, color: flpForm.title === preset ? T.ink : T.inkSoft }}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={flpForm.title}
+                onChange={(e) => setFlpForm({ ...flpForm, title: e.target.value })}
+                placeholder="Or type a custom title…"
+                className="w-full px-3 py-2 text-sm mb-4"
+                style={{ border: `1px solid ${T.line}`, background: T.paper }}
+              />
+
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Program
+              </label>
+              <div className="flex gap-2 mb-4">
+                {FLP_PROGRAMS.map((key) => {
+                  const label = PROGRAMS.find((p) => p.key === key)?.label || key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setFlpForm({ ...flpForm, program: key, breakdown: {} })}
+                      className="text-sm px-3 py-1.5"
+                      style={{
+                        background: flpForm.program === key ? T.ink : "transparent",
+                        color: flpForm.program === key ? T.paper : T.inkSoft,
+                        border: `1px solid ${T.ink}`,
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Time limit (minutes)
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={flpForm.timeMinutes}
+                onChange={(e) => setFlpForm({ ...flpForm, timeMinutes: e.target.value })}
+                className="w-32 px-3 py-2 text-sm mb-4"
+                style={{ border: `1px solid ${T.line}`, background: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+              />
+
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                MCQs per subject
+              </label>
+              {flpSubjectsForProgram.length === 0 ? (
+                <div className="text-sm mb-4" style={{ color: T.inkSoft }}>
+                  No {flpForm.program} questions in the bank yet — add some first.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                  {flpSubjectsForProgram.map((subject) => (
+                    <div key={subject}>
+                      <div className="text-xs mb-1" style={{ color: T.inkSoft }}>{subject}</div>
+                      <input
+                        type="number"
+                        min={0}
+                        value={flpForm.breakdown[subject] || ""}
+                        onChange={(e) => setFlpForm({ ...flpForm, breakdown: { ...flpForm.breakdown, [subject]: e.target.value } })}
+                        placeholder="0"
+                        className="w-full px-2 py-1.5 text-sm"
+                        style={{ border: `1px solid ${T.line}`, background: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={createFLPTest}
+                disabled={flpCreating}
+                className="flex items-center gap-2 px-5 py-2 text-sm disabled:opacity-50"
+                style={{ background: T.ink, color: T.paper }}
+              >
+                <Save size={16} /> {flpCreating ? "Creating…" : "Create paper"}
+              </button>
+            </div>
+
+            <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-3">Existing papers</h3>
+            {flpTests.length === 0 ? (
+              <div className="text-sm" style={{ color: T.inkSoft }}>No papers created yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {flpTests.map((t) => (
+                  <div key={t.id} className="p-3 flex items-center justify-between gap-3" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <div>
+                      <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.title}</div>
+                      <div className="text-xs" style={{ color: T.inkSoft }}>
+                        {PROGRAMS.find((p) => p.key === t.program)?.label || t.program} · {t.questionIds.length} MCQs · {Math.round(t.timeSeconds / 60)} min
+                      </div>
+                    </div>
+                    <button onClick={() => deleteFLPTest(t.id)} className="p-2" style={{ border: `1px solid ${T.rose}`, color: T.rose }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "flpresults" && (
+          <div className="max-w-4xl">
+            <div className="flex items-center justify-between mb-2">
+              <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-xl flex items-center gap-2">
+                <FileCheck2 size={18} /> FLP Results
+              </h2>
+              <button
+                onClick={async () => {
+                  setFlpAttemptsLoading(true);
+                  setFlpAttempts(await loadFLPAttempts());
+                  setFlpAttemptsLoading(false);
+                }}
+                className="flex items-center gap-1 text-xs px-3 py-1.5"
+                style={{ border: `1px solid ${T.ink}` }}
+              >
+                <RotateCcw size={12} /> {flpAttemptsLoading ? "Loading…" : "Load results"}
+              </button>
+            </div>
+            <p className="text-sm mb-4" style={{ color: T.inkSoft }}>
+              Shows the most recent 500 submitted papers, across every student.
+            </p>
+            {flpTests.length > 0 && (
+              <select
+                value={flpResultsFilter}
+                onChange={(e) => setFlpResultsFilter(e.target.value)}
+                className="px-3 py-2 text-sm mb-4"
+                style={{ border: `1px solid ${T.line}`, background: T.card }}
+              >
+                <option value="">All papers</option>
+                {flpTests.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+              </select>
+            )}
+            {flpAttempts.length === 0 ? (
+              <div className="text-sm" style={{ color: T.inkSoft }}>
+                {flpAttemptsLoading ? "Loading…" : "No results loaded yet — click \"Load results\" above."}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {flpAttempts
+                  .filter((a) => !flpResultsFilter || a.test_id === flpResultsFilter)
+                  .map((a) => (
+                    <div key={a.id} className="p-3 flex items-center justify-between gap-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                      <div>
+                        <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{a.name || "Unknown"}</div>
+                        <div className="text-xs" style={{ color: T.inkSoft }}>
+                          {a.test_title} · {a.program} · {new Date(a.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.emerald }}>
+                        {a.score}/{a.total} ({Math.round((a.score / a.total) * 100)}%)
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "dashboard" && (
           <div className="max-w-3xl">
             <div className="flex items-center justify-between mb-2">
@@ -7351,6 +7627,7 @@ export default function App() {
   const [discussions, setDiscussions] = useState({});
   const [syllabusItems, setSyllabusItems] = useState([]);
   const [guidelineItems, setGuidelineItems] = useState([]);
+  const [flpTests, setFlpTests] = useState([]);
   const [contactItems, setContactItems] = useState([]);
   const [socialLinks, setSocialLinks] = useState({});
   const [examDates, setExamDates] = useState({});
@@ -7479,9 +7756,9 @@ export default function App() {
         }
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc, dr] = await Promise.all([
+      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc, dr, flp] = await Promise.all([
         loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(), loadExamDates(),
-        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(), loadDailyReminder(),
+        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(), loadDailyReminder(), loadFLPTests(),
       ]);
       setNotesBank(n);
       setNotifications(notifs);
@@ -7495,6 +7772,7 @@ export default function App() {
       setQuestionReports(qr);
       setDiscussions(disc);
       setDailyReminder(dr);
+      setFlpTests(flp);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -7726,25 +8004,18 @@ export default function App() {
     startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
   };
 
-  const openFLP = (program) => {
-    const config = FLP_CONFIG[program];
-    const progLabel = PROGRAMS.find((p) => p.key === program)?.label || program;
-    if (!config) {
-      alert(`Full Length Paper for ${progLabel} is coming soon.`);
-      return;
-    }
-    const usedIds = new Set((stats?.flpUsed && stats.flpUsed[program]) || []);
-    const { questions, shortfalls } = buildFLPExam(bank, program, usedIds);
+  const openFLP = (test) => {
+    // Fixed paper: the question set was drawn once when the admin created this
+    // test (see drawFLPQuestions/AdminPanel), never reshuffled per attempt.
+    // A question that's since been deleted from the bank is just skipped.
+    const byId = new Map(bank.map((q) => [q.id, q]));
+    const questions = test.questionIds.map((id) => byId.get(id)).filter(Boolean);
     if (questions.length === 0) {
-      alert(`No questions available yet for the ${progLabel} Full Length Paper. Ask your admin to add MCQs first.`);
+      alert(`This paper's questions are no longer available. Please tell your admin — "${test.title}" needs to be recreated.`);
       return;
-    }
-    if (shortfalls.length > 0) {
-      const lines = shortfalls.map((s) => `${s.subject} is short on questions`).join("\n");
-      alert(`Heads up — the question bank doesn't have enough MCQs yet for a full ${progLabel} paper:\n${lines}\n\nStarting with what's available.`);
     }
     setQuizQuestions(questions);
-    setQuizMeta({ label: `${progLabel} — Full Length Paper`, timeLimit: config.timeSeconds, mode: "flp", flpProgram: program });
+    setQuizMeta({ label: test.title, timeLimit: test.timeSeconds, mode: "flp", flpTestId: test.id, flpTestTitle: test.title, flpProgram: test.program });
     setView("quiz");
   };
 
@@ -7963,6 +8234,12 @@ export default function App() {
     await saveGuidelineItems(next);
   };
 
+  // ---- FLP tests: admin builds/deletes fixed papers ----
+  const saveFLPTestsHandler = async (next) => {
+    setFlpTests(next);
+    await saveFLPTests(next);
+  };
+
   // ---- Contact items (WhatsApp / links): admin-only add/remove ----
   const addContactItem = async (item) => {
     const next = [...contactItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
@@ -8044,13 +8321,20 @@ export default function App() {
       }
     }
 
-    // FLP: remember which questions this student has already seen for this program,
-    // so the next auto-generated paper prefers fresh ones instead of repeating.
-    let flpUsed = stats?.flpUsed || {};
-    if (quizMeta.mode === "flp" && quizMeta.flpProgram) {
-      const priorUsed = new Set(flpUsed[quizMeta.flpProgram] || []);
-      res.questions.forEach((qq) => priorUsed.add(qq.id));
-      flpUsed = { ...flpUsed, [quizMeta.flpProgram]: Array.from(priorUsed) };
+    // FLP: papers are fixed now (same paper for everyone), so there's no more
+    // "used questions" tracking needed. Instead, record this attempt so the
+    // admin can see who took which paper and what they scored.
+    const flpUsed = stats?.flpUsed || {};
+    if (quizMeta.mode === "flp" && quizMeta.flpTestId) {
+      saveFLPAttempt({
+        userId: user?.id,
+        name: user?.user_metadata?.name || stats?.name || "",
+        program: quizMeta.flpProgram,
+        testId: quizMeta.flpTestId,
+        testTitle: quizMeta.flpTestTitle,
+        score: res.correct,
+        total: res.questions.length,
+      });
     }
 
     // Progress trend: merge today's totals into a rolling daily history (kept to 30 days).
@@ -8160,6 +8444,7 @@ export default function App() {
         onOpenSaved={openSaved}
         onOpenLeaderboard={() => setView("leaderboard")}
         onOpenFLP={openFLP}
+        flpTests={flpTests}
         notesBank={notesBank}
         notifications={notifications.filter((n) => !n.program || n.program === "All" || n.program === userCourse)}
         onRefreshNotifications={refreshNotifications}
@@ -8218,6 +8503,8 @@ export default function App() {
         onSendPush={sendPushBroadcastHandler}
         dailyReminder={dailyReminder}
         onUpdateDailyReminder={updateDailyReminder}
+        flpTests={flpTests}
+        onSaveFLPTests={saveFLPTestsHandler}
       />
     );
   }
@@ -8381,6 +8668,7 @@ export default function App() {
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
         onReportQuestion={reportQuestion}
+        deferFeedback={quizMeta.mode === "flp"}
       />
     );
   }
