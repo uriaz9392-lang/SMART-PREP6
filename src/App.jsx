@@ -497,10 +497,10 @@ export async function saveGuidelineItems(guidelines) {
 }
 
 // ---- FLP (Full Length Paper) tests: fixed, admin-built papers ----
-// Each test is a FIXED set of question ids chosen once by the admin (either a
-// one-time random draw by subject-breakdown, or hand-picked) — never
-// reshuffled per student or per attempt, so "First Year Full Course Test" is
-// the same paper for everyone who takes it, like a real exam.
+// Each test is a FIXED set of question ids, built once from an admin's bulk
+// PDF upload — never reshuffled per student or per attempt, so "First Year
+// Full Course Test" is the same paper for everyone who takes it, like a
+// real exam.
 export async function loadFLPTests() {
   try {
     const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
@@ -535,6 +535,7 @@ export async function saveFLPAttempt(attempt) {
     const { error } = await supabase.from("flp_attempts").insert({
       user_id: attempt.userId,
       name: attempt.name || "",
+      phone: attempt.phone || "",
       program: attempt.program,
       test_id: attempt.testId,
       test_title: attempt.testTitle,
@@ -543,14 +544,14 @@ export async function saveFLPAttempt(attempt) {
     });
     if (error) throw error;
   } catch (e) {
-    console.error("Save FLP attempt failed (create the 'flp_attempts' table — see comment near its usage):", e);
+    console.error("Save FLP attempt failed (create the 'flp_attempts' table, and add a 'phone' column — see comment near its usage):", e);
   }
 }
 export async function loadFLPAttempts() {
   try {
     const { data, error } = await supabase
       .from("flp_attempts")
-      .select("id, user_id, name, program, test_id, test_title, score, total, created_at")
+      .select("id, user_id, name, phone, program, test_id, test_title, score, total, created_at")
       .order("created_at", { ascending: false })
       .limit(500);
     if (error) throw error;
@@ -1851,26 +1852,6 @@ function shuffleQuestionOptions(q) {
   return { ...q, options: order.map((i) => q.options[i]), correct: order.indexOf(q.correct) };
 }
 
-// ---------- FLP one-time question draw (used only when admin creates a test) ----------
-// Randomly draws `needed` questions per subject from `breakdown` for `program`,
-// ONE TIME, when the admin creates the test. The resulting question ids are then
-// saved as a fixed list on the test itself (see saveFLPTests) — every student who
-// opens this test from then on gets that exact same paper, nothing is drawn again
-// per attempt. Returns { questionIds, shortfalls } where shortfalls lists any
-// subject that didn't have enough MCQs in the bank yet to meet its quota.
-function drawFLPQuestions(bank, program, breakdown) {
-  const shortfalls = [];
-  let questionIds = [];
-  Object.entries(breakdown).forEach(([subject, needed]) => {
-    if (!needed) return;
-    const pool = bank.filter((q) => q.program === program && q.subject === subject);
-    const picked = shuffleArray(pool).slice(0, needed);
-    if (picked.length < needed) shortfalls.push({ subject, needed, available: pool.length });
-    questionIds = questionIds.concat(picked.map((q) => q.id));
-  });
-  return { questionIds, shortfalls };
-}
-
 // ---------- WhatsApp brand icon ----------
 // lucide-react (the icon set this app uses) doesn't include brand/logo icons,
 // so the recognizable WhatsApp glyph is drawn inline here instead of pulling
@@ -3154,6 +3135,22 @@ function Home({
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  // FLP: ask for real name + mobile number right before the paper opens, so
+  // admin can match results to students even when account names differ.
+  const [pendingFLPTest, setPendingFLPTest] = useState(null);
+  const [flpNameInput, setFlpNameInput] = useState("");
+  const [flpPhoneInput, setFlpPhoneInput] = useState("");
+  const openFLPDetailsPrompt = (t) => {
+    setFlpNameInput(stats?.name || userName || "");
+    setFlpPhoneInput(stats?.phone || "");
+    setPendingFLPTest(t);
+  };
+  const confirmFLPStart = () => {
+    if (!flpNameInput.trim() || !flpPhoneInput.trim()) return;
+    const t = pendingFLPTest;
+    setPendingFLPTest(null);
+    onOpenFLP(t, flpNameInput.trim(), flpPhoneInput.trim());
+  };
   const total = bank.filter((q) => programs.some((p) => p.key === q.program)).length;
   const counts = useMemo(() => {
     const c = {};
@@ -3342,7 +3339,7 @@ function Home({
               {myTests.map((t) => (
                 <button
                   key={t.id}
-                  onClick={() => onOpenFLP(t)}
+                  onClick={() => openFLPDetailsPrompt(t)}
                   className="text-left p-5 flex items-center gap-4"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
@@ -3364,6 +3361,59 @@ function Home({
             </div>
           )}
         </div>
+        {pendingFLPTest && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center px-6"
+            style={{ background: "rgba(0,0,0,0.5)" }}
+          >
+            <div className="w-full max-w-sm p-6" style={{ background: T.paper, border: `1px solid ${T.line}` }}>
+              <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-1">
+                Before you start
+              </h3>
+              <p className="text-sm mb-4" style={{ color: T.inkSoft }}>
+                Enter your real name and mobile number for "{pendingFLPTest.title}". This is how your admin will identify your result.
+              </p>
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Real name
+              </label>
+              <input
+                value={flpNameInput}
+                onChange={(e) => setFlpNameInput(e.target.value)}
+                placeholder="e.g. Ayesha Khan"
+                className="w-full px-3 py-2 text-sm mb-3"
+                style={{ border: `1px solid ${T.line}`, background: T.card, color: T.ink }}
+              />
+              <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Mobile number
+              </label>
+              <input
+                value={flpPhoneInput}
+                onChange={(e) => setFlpPhoneInput(e.target.value)}
+                placeholder="e.g. 03001234567"
+                type="tel"
+                className="w-full px-3 py-2 text-sm mb-5"
+                style={{ border: `1px solid ${T.line}`, background: T.card, color: T.ink }}
+              />
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPendingFLPTest(null)}
+                  className="flex-1 px-4 py-2 text-sm"
+                  style={{ border: `1px solid ${T.line}`, color: T.inkSoft }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmFLPStart}
+                  disabled={!flpNameInput.trim() || !flpPhoneInput.trim()}
+                  className="flex-1 px-4 py-2 text-sm disabled:opacity-50"
+                  style={{ background: T.ink, color: T.paper }}
+                >
+                  Start paper
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
       </div>
     );
@@ -5162,7 +5212,7 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
 }
 
 // ---------- Results ----------
-function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion }) {
+function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion, hideScore }) {
   const { questions, answers, correct } = result;
   const pct = Math.round((correct / questions.length) * 100);
   const letters = ["A", "B", "C", "D"];
@@ -5171,17 +5221,35 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
       <FontLoader />
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <div className="text-center mb-10">
-          <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
-            {subject} — Result
+        {hideScore ? (
+          // FLP: the overall percentage/score is intentionally withheld here —
+          // that gets announced separately by the admin. Each question below
+          // still shows whether it was answered right or wrong, plus its
+          // explanation, so review isn't held back — just the final tally.
+          <div className="text-center mb-10">
+            <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+              {subject} — Submitted
+            </div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl">
+              Your paper has been submitted.
+            </div>
+            <div className="text-sm mt-2" style={{ color: T.inkSoft }}>
+              Your overall result will be announced separately. Review your answers and explanations below.
+            </div>
           </div>
-          <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-6xl">
-            {pct}%
+        ) : (
+          <div className="text-center mb-10">
+            <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+              {subject} — Result
+            </div>
+            <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-6xl">
+              {pct}%
+            </div>
+            <div className="text-sm mt-2" style={{ color: T.inkSoft }}>
+              {correct} out of {questions.length} correct
+            </div>
           </div>
-          <div className="text-sm mt-2" style={{ color: T.inkSoft }}>
-            {correct} out of {questions.length} correct
-          </div>
-        </div>
+        )}
 
         <div className="space-y-6 mb-10">
           {questions.map((q, i) => {
@@ -5243,9 +5311,11 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
         </div>
 
         <div className="flex gap-3 justify-center">
-          <button onClick={onRetry} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>
-            <RotateCcw size={16} /> Practice again
-          </button>
+          {!hideScore && (
+            <button onClick={onRetry} className="flex items-center gap-2 px-5 py-2 text-sm" style={{ border: `1px solid ${T.ink}` }}>
+              <RotateCcw size={16} /> Practice again
+            </button>
+          )}
           <button onClick={onHome} className="px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>
             Back to programs
           </button>
@@ -5753,8 +5823,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [notePdfUploading, setNotePdfUploading] = useState(false);
   const [notifForm, setNotifForm] = useState(EMPTY_NOTIF_FORM);
-  const [flpForm, setFlpForm] = useState({ title: "", program: "MDCAT", timeMinutes: 180, breakdown: {} });
-  const [flpCreating, setFlpCreating] = useState(false);
+  const [flpForm, setFlpForm] = useState({ title: "", program: "MDCAT", timeMinutes: 180 });
   const [flpAttempts, setFlpAttempts] = useState([]);
   const [flpAttemptsLoading, setFlpAttemptsLoading] = useState(false);
   const [flpResultsFilter, setFlpResultsFilter] = useState("");
@@ -5831,51 +5900,166 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     }
   };
 
-  // ---- FLP tests: admin builds a fixed paper (one-time random draw by subject) ----
-  const flpSubjectsForProgram = useMemo(
-    () => Array.from(new Set(bank.filter((q) => q.program === flpForm.program).map((q) => q.subject))).sort(),
-    [bank, flpForm.program]
-  );
-  const createFLPTest = async () => {
+  const deleteFLPTest = async (id) => {
+    if (!window.confirm("Delete this paper? Students will no longer be able to open it. Past results for it are kept.")) return;
+    await onSaveFLPTests(flpTests.filter((t) => t.id !== id));
+  };
+
+  // ---- FLP tests: build a fixed paper from a bulk-uploaded PDF. Reuses the
+  // exact same PDF-reading/parsing helpers as the "Bulk Upload (PDF)"
+  // question-bank tab (extractPdfText, splitIntoQuestionBlocks,
+  // parseQuestionBlock) but keeps its own state so the two upload flows
+  // never interfere with each other. This is the only way to build an FLP
+  // paper — there is no auto/random draw from the bank. Only offered for
+  // MDCAT/KMU CAT (flpForm.program is already restricted to FLP_PROGRAMS).
+  const [flpBulkFile, setFlpBulkFile] = useState(null);
+  const [flpBulkStatus, setFlpBulkStatus] = useState("idle");
+  const [flpBulkProgressText, setFlpBulkProgressText] = useState("");
+  const [flpBulkError, setFlpBulkError] = useState("");
+  const [flpBulkResults, setFlpBulkResults] = useState([]);
+  const [flpBulkSummary, setFlpBulkSummary] = useState("");
+  const [flpBulkSaving, setFlpBulkSaving] = useState(false);
+
+  const runFLPBulkExtract = async () => {
+    if (!flpBulkFile) {
+      setFlpBulkError("Please choose a PDF file first.");
+      return;
+    }
+    if (!flpForm.title.trim()) {
+      setFlpBulkError("Please give this paper a title above before uploading.");
+      return;
+    }
+    setFlpBulkError("");
+    setFlpBulkResults([]);
+    setFlpBulkSummary("");
+    try {
+      setFlpBulkStatus("extracting");
+      setFlpBulkProgressText("Reading PDF…");
+      const fullText = await extractPdfText(flpBulkFile, (page, total) => {
+        setFlpBulkProgressText(`Reading PDF — page ${page} of ${total}…`);
+      });
+      if (!fullText.trim()) {
+        setFlpBulkError("Could not find any text in this PDF (it may be a scanned image). Try a text-based PDF.");
+        setFlpBulkStatus("error");
+        return;
+      }
+
+      setFlpBulkStatus("analyzing");
+      setFlpBulkProgressText("Parsing questions from the PDF text…");
+      const blocks = splitIntoQuestionBlocks(fullText);
+
+      if (blocks.length === 0) {
+        setFlpBulkError(
+          'This PDF doesn\'t match the expected format ("Q1) question / A) B) C) D) / Answer: / Explanation:"). No questions could be extracted.'
+        );
+        setFlpBulkStatus("error");
+        return;
+      }
+
+      const complete = [];
+      const incomplete = [];
+      blocks.forEach((block) => {
+        const parsed = parseQuestionBlock(block);
+        const entry = {
+          question: parsed.question,
+          options: parsed.options.length === 4 ? parsed.options : ["", "", "", ""],
+          correct: parsed.correct !== null ? parsed.correct : 0,
+          explanation: parsed.explanation,
+          answer_source: parsed.complete ? "text" : "missing",
+          include: true,
+        };
+        if (parsed.complete) complete.push(entry);
+        else incomplete.push(entry);
+      });
+
+      const combined = [...complete, ...incomplete];
+      if (combined.length === 0) {
+        setFlpBulkError("No MCQs could be extracted from this PDF. Please check the file and try again.");
+        setFlpBulkStatus("error");
+        return;
+      }
+
+      setFlpBulkSummary(
+        incomplete.length > 0
+          ? `${complete.length} question(s) parsed completely · ${incomplete.length} question(s) are missing Answer and/or Explanation — please fill those in manually below before creating the paper`
+          : `${complete.length} question(s) parsed completely — all good.`
+      );
+      setFlpBulkResults(combined);
+      setFlpBulkStatus("done");
+      setFlpBulkProgressText("");
+    } catch (e) {
+      setFlpBulkError(String(e?.message || e));
+      setFlpBulkStatus("error");
+    }
+  };
+
+  const toggleFLPBulkInclude = (idx) => {
+    setFlpBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, include: !m.include } : m)));
+  };
+  const updateFLPBulkResult = (idx, patch) => {
+    setFlpBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  };
+
+  // Adds the reviewed questions to the bank (tagged with this paper's title
+  // as their source/topic, so they're easy to find later) and then creates
+  // the fixed FLP test pointing at exactly those new question ids — no
+  // random draw involved, since the whole paper came from the uploaded PDF.
+  const createFLPTestFromBulk = async () => {
+    if (flpBulkSaving) return; // already in-flight — ignore extra taps
     if (!flpForm.title.trim()) {
       alert("Please give this paper a title.");
       return;
     }
-    const breakdown = {};
-    Object.entries(flpForm.breakdown).forEach(([subject, count]) => {
-      const n = Number(count) || 0;
-      if (n > 0) breakdown[subject] = n;
-    });
-    if (Object.keys(breakdown).length === 0) {
-      alert("Set at least one subject's MCQ count above 0.");
+    const toAdd = flpBulkResults
+      .filter((m) => m.include)
+      .map((m) => ({
+        id: uid(),
+        program: flpForm.program,
+        year: "",
+        block: "",
+        subject: "FLP",
+        topic: flpForm.title.trim(),
+        source: flpForm.title.trim(),
+        question: m.question,
+        options: m.options,
+        correct: m.correct,
+        explanation: m.explanation,
+      }));
+    if (toAdd.length === 0) {
+      alert("No questions selected. Tick \"Include\" on at least one question below.");
       return;
     }
-    setFlpCreating(true);
-    const { questionIds, shortfalls } = drawFLPQuestions(bank, flpForm.program, breakdown);
-    if (questionIds.length === 0) {
-      setFlpCreating(false);
-      alert("No matching questions found in the bank for this program/subject combination.");
+    setFlpBulkSaving(true);
+    const prevBank = bank;
+    const nextBank = [...bank, ...toAdd];
+    setBank(nextBank);
+    const ok = await saveBank(nextBank);
+    if (ok !== true) {
+      setBank(prevBank);
+      setFlpBulkSaving(false);
+      alert(
+        ok === "blocked"
+          ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
+          : "Could not save these questions — check your internet connection and try again."
+      );
       return;
-    }
-    if (shortfalls.length > 0) {
-      const lines = shortfalls.map((s) => `${s.subject}: needed ${s.needed}, only ${s.available} available`).join("\n");
-      alert(`Heads up — some subjects didn't have enough MCQs, so this paper is smaller than planned:\n${lines}`);
     }
     const test = {
       id: uid(),
       title: flpForm.title.trim(),
       program: flpForm.program,
       timeSeconds: Math.max(1, Number(flpForm.timeMinutes) || 1) * 60,
-      questionIds,
+      questionIds: toAdd.map((q) => q.id),
       createdAt: new Date().toISOString(),
     };
     await onSaveFLPTests([...flpTests, test]);
-    setFlpForm({ title: "", program: flpForm.program, timeMinutes: 180, breakdown: {} });
-    setFlpCreating(false);
-  };
-  const deleteFLPTest = async (id) => {
-    if (!window.confirm("Delete this paper? Students will no longer be able to open it. Past results for it are kept.")) return;
-    await onSaveFLPTests(flpTests.filter((t) => t.id !== id));
+    setFlpBulkSaving(false);
+    setFlpBulkResults([]);
+    setFlpBulkSummary("");
+    setFlpBulkStatus("idle");
+    setFlpBulkFile(null);
+    setFlpForm({ title: "", program: flpForm.program, timeMinutes: 180 });
+    alert(`FLP paper "${test.title}" created with ${toAdd.length} question(s).`);
   };
 
 
@@ -7193,9 +7377,9 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               <FileCheck2 size={18} /> Full Length Paper Tests
             </h2>
             <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
-              Build a fixed paper — the questions are drawn once, right now, from the bank
-              by subject count, and then stay exactly the same for every student who opens
-              it (like a real, printed exam). Only offered to MDCAT and KMU CAT.
+              Upload a PDF to build a fixed paper — every question extracted from it becomes
+              this paper, and it stays exactly the same for every student who opens it (like
+              a real, printed exam). Only offered to MDCAT and KMU CAT.
             </p>
 
             <div className="p-5 mb-8" style={{ background: T.card, border: `1px solid ${T.line}` }}>
@@ -7231,7 +7415,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   return (
                     <button
                       key={key}
-                      onClick={() => setFlpForm({ ...flpForm, program: key, breakdown: {} })}
+                      onClick={() => setFlpForm({ ...flpForm, program: key })}
                       className="text-sm px-3 py-1.5"
                       style={{
                         background: flpForm.program === key ? T.ink : "transparent",
@@ -7257,40 +7441,138 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                 style={{ border: `1px solid ${T.line}`, background: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
               />
 
-              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
-                MCQs per subject
-              </label>
-              {flpSubjectsForProgram.length === 0 ? (
-                <div className="text-sm mb-4" style={{ color: T.inkSoft }}>
-                  No {flpForm.program} questions in the bank yet — add some first.
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-                  {flpSubjectsForProgram.map((subject) => (
-                    <div key={subject}>
-                      <div className="text-xs mb-1" style={{ color: T.inkSoft }}>{subject}</div>
-                      <input
-                        type="number"
-                        min={0}
-                        value={flpForm.breakdown[subject] || ""}
-                        onChange={(e) => setFlpForm({ ...flpForm, breakdown: { ...flpForm.breakdown, [subject]: e.target.value } })}
-                        placeholder="0"
-                        className="w-full px-2 py-1.5 text-sm"
-                        style={{ border: `1px solid ${T.line}`, background: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div>
+                  <p className="text-sm mb-4" style={{ color: T.inkSoft }}>
+                    Upload a PDF formatted the same way as Past Papers bulk upload:{" "}
+                    <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>Q1) question / A) B) C) D) / Answer: / Explanation:</code>.
+                    Every question extracted from this PDF becomes this paper — nothing is drawn from the bank.
+                  </p>
 
-              <button
-                onClick={createFLPTest}
-                disabled={flpCreating}
-                className="flex items-center gap-2 px-5 py-2 text-sm disabled:opacity-50"
-                style={{ background: T.ink, color: T.paper }}
-              >
-                <Save size={16} /> {flpCreating ? "Creating…" : "Create paper"}
-              </button>
+                  <div className="mb-4">
+                    <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                      PDF file
+                    </label>
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={(e) => setFlpBulkFile(e.target.files?.[0] || null)}
+                      className="w-full text-sm"
+                    />
+                  </div>
+
+                  <button
+                    onClick={runFLPBulkExtract}
+                    disabled={flpBulkStatus === "extracting" || flpBulkStatus === "analyzing"}
+                    className="flex items-center gap-2 px-5 py-2 text-sm mb-4"
+                    style={{ background: T.ink, color: T.paper, opacity: flpBulkStatus === "extracting" || flpBulkStatus === "analyzing" ? 0.6 : 1 }}
+                  >
+                    <Plus size={16} />
+                    {flpBulkStatus === "extracting" || flpBulkStatus === "analyzing" ? "Working…" : "Extract Questions from PDF"}
+                  </button>
+
+                  {(flpBulkStatus === "extracting" || flpBulkStatus === "analyzing") && (
+                    <div className="text-sm mb-4" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+                      {flpBulkProgressText}
+                    </div>
+                  )}
+
+                  {flpBulkError && (
+                    <div className="p-3 text-sm mb-4" style={{ border: `1px solid ${T.rose}`, color: T.rose, background: T.roseSoft }}>
+                      {flpBulkError}
+                    </div>
+                  )}
+
+                  {flpBulkResults.length > 0 && (
+                    <div>
+                      {flpBulkSummary && (
+                        <div
+                          className="p-3 text-sm mb-3"
+                          style={{ background: T.emeraldSoft, color: T.emerald, fontFamily: "'IBM Plex Mono', monospace" }}
+                        >
+                          {flpBulkSummary}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-sm" style={{ color: T.inkSoft }}>
+                          {flpBulkResults.length} question(s) found — {flpBulkResults.filter((m) => m.include).length} selected. Review, then create the paper.
+                        </div>
+                        <button
+                          onClick={createFLPTestFromBulk}
+                          disabled={flpBulkSaving}
+                          className="flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-50"
+                          style={{ background: T.emerald, color: "#fff" }}
+                        >
+                          <Save size={16} /> {flpBulkSaving ? "Creating…" : "Create FLP paper"}
+                        </button>
+                      </div>
+                      <div className="space-y-3">
+                        {flpBulkResults.map((m, idx) => (
+                          <div key={idx} className="p-4" style={{ background: T.card, border: `1px solid ${T.line}`, opacity: m.include ? 1 : 0.5 }}>
+                            <div className="flex items-start justify-between gap-3 mb-2">
+                              <label className="flex items-center gap-2 text-sm">
+                                <input type="checkbox" checked={m.include} onChange={() => toggleFLPBulkInclude(idx)} />
+                                Include
+                              </label>
+                              {m.answer_source === "missing" && (
+                                <span
+                                  className="text-xs px-2 py-0.5 shrink-0"
+                                  style={{ background: T.roseSoft, color: T.rose, fontFamily: "'IBM Plex Mono', monospace" }}
+                                >
+                                  Answer/Explanation missing — fill in manually
+                                </span>
+                              )}
+                            </div>
+                            <textarea
+                              value={m.question}
+                              onChange={(e) => updateFLPBulkResult(idx, { question: e.target.value })}
+                              rows={2}
+                              className="w-full px-3 py-2 mb-2"
+                              style={{ border: `1px solid ${T.line}`, background: T.card, fontFamily: "'Source Serif 4', serif" }}
+                            />
+                            <div className="space-y-1 mb-2">
+                              {m.options.map((opt, oi) => (
+                                <div key={oi} className="flex items-center gap-3">
+                                  <Bubble
+                                    letter={["A", "B", "C", "D"][oi]}
+                                    state={m.correct === oi ? "correct" : "idle"}
+                                    onClick={() => updateFLPBulkResult(idx, { correct: oi })}
+                                  />
+                                  <input
+                                    value={opt}
+                                    onChange={(e) => {
+                                      const opts = [...m.options];
+                                      opts[oi] = e.target.value;
+                                      updateFLPBulkResult(idx, { options: opts });
+                                    }}
+                                    className="flex-1 px-3 py-1.5 text-sm"
+                                    style={{ border: `1px solid ${T.line}`, background: T.card }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation</label>
+                            <textarea
+                              value={m.explanation}
+                              onChange={(e) => updateFLPBulkResult(idx, { explanation: e.target.value })}
+                              rows={2}
+                              placeholder="Add an explanation…"
+                              className="w-full px-3 py-2 text-sm"
+                              style={{ border: `1px solid ${T.line}`, background: T.card }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={createFLPTestFromBulk}
+                        disabled={flpBulkSaving}
+                        className="flex items-center gap-2 px-4 py-2 text-sm mt-4 disabled:opacity-50"
+                        style={{ background: T.emerald, color: "#fff" }}
+                      >
+                        <Save size={16} /> {flpBulkSaving ? "Creating…" : "Create FLP paper"}
+                      </button>
+                    </div>
+                  )}
+                </div>
             </div>
 
             <h3 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-lg mb-3">Existing papers</h3>
@@ -7359,7 +7641,9 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                   .map((a) => (
                     <div key={a.id} className="p-3 flex items-center justify-between gap-3 text-sm" style={{ background: T.card, border: `1px solid ${T.line}` }}>
                       <div>
-                        <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{a.name || "Unknown"}</div>
+                        <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>
+                          {a.name || "Unknown"}{a.phone ? ` · ${a.phone}` : ""}
+                        </div>
                         <div className="text-xs" style={{ color: T.inkSoft }}>
                           {a.test_title} · {a.program} · {new Date(a.created_at).toLocaleString()}
                         </div>
@@ -7650,6 +7934,10 @@ export default function App() {
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
   const [quizMeta, setQuizMeta] = useState({ label: "", timeLimit: null, mode: "normal" });
+  // Real name + mobile number collected right before an FLP attempt starts
+  // (see openFLP and the modal in Home's FLP tab) — used instead of the
+  // account name when the attempt is saved, so admin can compile results.
+  const [flpAttemptDetails, setFlpAttemptDetails] = useState({ name: "", phone: "" });
   const isAdminURL = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("admin");
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -8004,9 +8292,9 @@ export default function App() {
     startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
   };
 
-  const openFLP = (test) => {
+  const openFLP = (test, attemptName, attemptPhone) => {
     // Fixed paper: the question set was drawn once when the admin created this
-    // test (see drawFLPQuestions/AdminPanel), never reshuffled per attempt.
+    // test (built from a bulk PDF upload in AdminPanel), never reshuffled per attempt.
     // A question that's since been deleted from the bank is just skipped.
     const byId = new Map(bank.map((q) => [q.id, q]));
     const questions = test.questionIds.map((id) => byId.get(id)).filter(Boolean);
@@ -8014,6 +8302,10 @@ export default function App() {
       alert(`This paper's questions are no longer available. Please tell your admin — "${test.title}" needs to be recreated.`);
       return;
     }
+    // Real name + mobile number, collected just before starting (see the
+    // modal in Home's FLP tab), so the admin can match results to students
+    // reliably even when account names differ from what students go by.
+    setFlpAttemptDetails({ name: (attemptName || "").trim(), phone: (attemptPhone || "").trim() });
     setQuizQuestions(questions);
     setQuizMeta({ label: test.title, timeLimit: test.timeSeconds, mode: "flp", flpTestId: test.id, flpTestTitle: test.title, flpProgram: test.program });
     setView("quiz");
@@ -8328,7 +8620,8 @@ export default function App() {
     if (quizMeta.mode === "flp" && quizMeta.flpTestId) {
       saveFLPAttempt({
         userId: user?.id,
-        name: user?.user_metadata?.name || stats?.name || "",
+        name: flpAttemptDetails.name || user?.user_metadata?.name || stats?.name || "",
+        phone: flpAttemptDetails.phone || "",
         program: quizMeta.flpProgram,
         testId: quizMeta.flpTestId,
         testTitle: quizMeta.flpTestTitle,
@@ -8362,6 +8655,8 @@ export default function App() {
       streak,
       lastChallengeDate,
       name: user?.user_metadata?.name || stats?.name || "",
+      // Remembered so the "before you start" FLP prompt can pre-fill it next time.
+      phone: (quizMeta.mode === "flp" && flpAttemptDetails.phone) || stats?.phone || "",
       flpUsed,
       history: trimmedHistory,
       course: user?.user_metadata?.course || stats?.course || null,
@@ -8684,6 +8979,7 @@ export default function App() {
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
         onReportQuestion={reportQuestion}
+        hideScore={quizMeta.mode === "flp"}
       />
     );
   }
