@@ -525,6 +525,42 @@ export async function saveFLPTests(flpTests) {
     return false;
   }
 }
+// Adds/removes one FLP test directly against whatever is CURRENTLY saved in
+// Supabase — re-fetching right before writing, instead of trusting this
+// browser tab's own in-memory `flpTests` copy. Without this, if a tab's copy
+// was ever behind (e.g. this tab was open from before another admin action,
+// or its very first load hadn't finished yet), saving "[...flpTests, test]"
+// would silently overwrite the real list on the server with that stale
+// local one — which looks exactly like "papers I made earlier disappeared".
+// Returns the new full list on success, or null on failure (nothing saved).
+export async function addFLPTestRemote(test) {
+  try {
+    const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    const current = (data && data.flp_tests) || [];
+    const next = [...current, test];
+    const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
+    if (updateError) throw updateError;
+    return next;
+  } catch (e) {
+    console.error("Add FLP test failed (add a 'flp_tests' jsonb column to app_data):", e);
+    return null;
+  }
+}
+export async function removeFLPTestRemote(id) {
+  try {
+    const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    const current = (data && data.flp_tests) || [];
+    const next = current.filter((t) => t.id !== id);
+    const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
+    if (updateError) throw updateError;
+    return next;
+  } catch (e) {
+    console.error("Remove FLP test failed:", e);
+    return null;
+  }
+}
 
 // ---- FLP attempts: one row per student per submitted paper, so admin can
 // see who took which test and what they scored. Separate Supabase table
@@ -5824,7 +5860,7 @@ function AdminCommunityLinksPanel({ socialLinks, onUpdateSocialLink }) {
   );
 }
 
-function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit, isDark, onToggleTheme, socialLinks, onUpdateSocialLink, pushSubscriberCount, onSendPush, dailyReminder, onUpdateDailyReminder, flpTests, onSaveFLPTests }) {
+function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, setNotifications, questionReports, onResolveReport, onDeleteReport, explanationFeedback, onExit, isDark, onToggleTheme, socialLinks, onUpdateSocialLink, pushSubscriberCount, onSendPush, dailyReminder, onUpdateDailyReminder, flpTests, onAddFLPTest, onDeleteFLPTest }) {
   const [tab, setTab] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -5922,7 +5958,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
 
   const deleteFLPTest = async (id) => {
     if (!window.confirm("Delete this paper? Students will no longer be able to open it. Past results for it are kept.")) return;
-    await onSaveFLPTests(flpTests.filter((t) => t.id !== id));
+    await onDeleteFLPTest(id);
   };
 
   // ---- FLP tests: build a fixed paper from a bulk-uploaded PDF. Reuses the
@@ -5952,6 +5988,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     setFlpBulkError("");
     setFlpBulkResults([]);
     setFlpBulkSummary("");
+    setFlpBulkPendingTest(null); // starting a fresh extraction — abandon any earlier partial save
     try {
       setFlpBulkStatus("extracting");
       setFlpBulkProgressText("Reading PDF…");
@@ -6020,66 +6057,88 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     setFlpBulkResults((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
   };
 
+  // If the FLP-paper save fails after the questions were already added to the
+  // bank (see createFLPTestFromBulk below), this holds onto that already-saved
+  // test object so a retry re-attempts only the paper save — not a duplicate
+  // bank insert of the same questions.
+  const [flpBulkPendingTest, setFlpBulkPendingTest] = useState(null);
+
   // Adds the reviewed questions to the bank (tagged with this paper's title
   // as their source/topic, so they're easy to find later) and then creates
   // the fixed FLP test pointing at exactly those new question ids — no
   // random draw involved, since the whole paper came from the uploaded PDF.
   const createFLPTestFromBulk = async () => {
     if (flpBulkSaving) return; // already in-flight — ignore extra taps
-    if (!flpForm.title.trim()) {
-      alert("Please give this paper a title.");
-      return;
-    }
-    const toAdd = flpBulkResults
-      .filter((m) => m.include)
-      .map((m) => ({
-        id: uid(),
-        program: flpForm.program,
-        year: "",
-        block: "",
-        subject: "FLP",
-        topic: flpForm.title.trim(),
-        source: flpForm.title.trim(),
-        question: m.question,
-        options: m.options,
-        correct: m.correct,
-        explanation: m.explanation,
-      }));
-    if (toAdd.length === 0) {
-      alert("No questions selected. Tick \"Include\" on at least one question below.");
-      return;
-    }
     setFlpBulkSaving(true);
-    const prevBank = bank;
-    const nextBank = [...bank, ...toAdd];
-    setBank(nextBank);
-    const ok = await saveBank(nextBank);
-    if (ok !== true) {
-      setBank(prevBank);
-      setFlpBulkSaving(false);
-      alert(
-        ok === "blocked"
-          ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
-          : "Could not save these questions — check your internet connection and try again."
-      );
+
+    let test = flpBulkPendingTest;
+    if (!test) {
+      if (!flpForm.title.trim()) {
+        alert("Please give this paper a title.");
+        setFlpBulkSaving(false);
+        return;
+      }
+      const toAdd = flpBulkResults
+        .filter((m) => m.include)
+        .map((m) => ({
+          id: uid(),
+          program: flpForm.program,
+          year: "",
+          block: "",
+          subject: "FLP",
+          topic: flpForm.title.trim(),
+          source: flpForm.title.trim(),
+          question: m.question,
+          options: m.options,
+          correct: m.correct,
+          explanation: m.explanation,
+        }));
+      if (toAdd.length === 0) {
+        alert("No questions selected. Tick \"Include\" on at least one question below.");
+        setFlpBulkSaving(false);
+        return;
+      }
+      const prevBank = bank;
+      const nextBank = [...bank, ...toAdd];
+      setBank(nextBank);
+      const ok = await saveBank(nextBank);
+      if (ok !== true) {
+        setBank(prevBank);
+        setFlpBulkSaving(false);
+        alert(
+          ok === "blocked"
+            ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
+            : "Could not save these questions — check your internet connection and try again."
+        );
+        return;
+      }
+      test = {
+        id: uid(),
+        title: flpForm.title.trim(),
+        program: flpForm.program,
+        timeSeconds: Math.max(1, Number(flpForm.timeMinutes) || 1) * 60,
+        questionIds: toAdd.map((q) => q.id),
+        createdAt: new Date().toISOString(),
+      };
+      setFlpBulkPendingTest(test);
+    }
+
+    const testSaved = await onAddFLPTest(test);
+    setFlpBulkSaving(false);
+    if (!testSaved) {
+      // The questions are already safely in the bank (or were on a previous
+      // attempt) — only the FLP paper record itself failed to save. Keep
+      // flpBulkPendingTest set so the next click retries just this step,
+      // never re-adding the same questions to the bank again.
       return;
     }
-    const test = {
-      id: uid(),
-      title: flpForm.title.trim(),
-      program: flpForm.program,
-      timeSeconds: Math.max(1, Number(flpForm.timeMinutes) || 1) * 60,
-      questionIds: toAdd.map((q) => q.id),
-      createdAt: new Date().toISOString(),
-    };
-    await onSaveFLPTests([...flpTests, test]);
-    setFlpBulkSaving(false);
+    setFlpBulkPendingTest(null);
     setFlpBulkResults([]);
     setFlpBulkSummary("");
     setFlpBulkStatus("idle");
     setFlpBulkFile(null);
     setFlpForm({ title: "", program: flpForm.program, timeMinutes: 180 });
-    alert(`FLP paper "${test.title}" created with ${toAdd.length} question(s).`);
+    alert(`FLP paper "${test.title}" created with ${test.questionIds.length} question(s).`);
   };
 
 
@@ -8585,10 +8644,28 @@ export default function App() {
     await saveGuidelineItems(next);
   };
 
-  // ---- FLP tests: admin builds/deletes fixed papers ----
-  const saveFLPTestsHandler = async (next) => {
+  // ---- FLP tests: admin adds/deletes fixed papers. These always re-fetch the
+  // live list from Supabase first (see addFLPTestRemote/removeFLPTestRemote)
+  // instead of trusting this tab's own `flpTests` copy, so a stale local copy
+  // can never silently wipe out papers saved from elsewhere. Return true/false
+  // so the caller can show a real error instead of assuming success.
+  const addFLPTestHandler = async (test) => {
+    const next = await addFLPTestRemote(test);
+    if (next === null) {
+      alert("Could not save this FLP paper to the server — check your internet connection and try again. Nothing was saved.");
+      return false;
+    }
     setFlpTests(next);
-    await saveFLPTests(next);
+    return true;
+  };
+  const deleteFLPTestHandler = async (id) => {
+    const next = await removeFLPTestRemote(id);
+    if (next === null) {
+      alert("Could not delete this FLP paper — check your internet connection and try again.");
+      return false;
+    }
+    setFlpTests(next);
+    return true;
   };
 
   // ---- Contact items (WhatsApp / links): admin-only add/remove ----
@@ -8858,7 +8935,8 @@ export default function App() {
         dailyReminder={dailyReminder}
         onUpdateDailyReminder={updateDailyReminder}
         flpTests={flpTests}
-        onSaveFLPTests={saveFLPTestsHandler}
+        onAddFLPTest={addFLPTestHandler}
+        onDeleteFLPTest={deleteFLPTestHandler}
       />
     );
   }
