@@ -1298,9 +1298,9 @@ const PAST_PAPER_FOLDERS = {
     { name: "KMU CAT 2026", subfolders: ["KMU CAT 2026 First Test", "KMU CAT 2026 2nd Test", "KMU CAT 2026 3rd Test"] },
   ],
   MBBS: [
-    "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
-    "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
-    "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024",
+    "KMU Block D 2020", "KMU Block D 2021", "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
+    "KMU Block E 2020", "KMU Block E 2021", "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
+    "KMU Block F 2020", "KMU Block F 2021", "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024",
   ],
   BSN: [], // to be provided later
 };
@@ -1790,11 +1790,13 @@ function splitIntoQuestionBlocks(text) {
 }
 
 // Parses a single question block. Returns { complete, question, options, correct, explanation, rawBlock }.
-// complete=true only if question + all 4 options + answer letter + explanation were all found.
+// complete=true only if question + all options (4, or 5 when a 5th "E)" option
+// is present — MBBS past papers sometimes have one) + answer letter + explanation
+// were all found.
 function parseQuestionBlock(block) {
   const withoutQNum = block.replace(/^Q\s*\d+\s*\)\s*/, "");
 
-  const optRegex = /(?:^|\n)\s*([ABCD])\s*[).]\s*/g;
+  const optRegex = /(?:^|\n)\s*([A-E])\s*[).]\s*/g;
   const optPositions = [];
   let m;
   while ((m = optRegex.exec(withoutQNum)) !== null) {
@@ -1807,20 +1809,20 @@ function parseQuestionBlock(block) {
 
   const questionText = withoutQNum.slice(0, optPositions[0].markerStart).replace(/\n/g, " ").trim();
 
-  const answerMatch = withoutQNum.match(/Answer\s*[:\-]\s*([ABCD])/i);
+  const answerMatch = withoutQNum.match(/Answer\s*[:\-]\s*([A-E])/i);
   const explanationMatch = withoutQNum.match(/Explanation\s*[:\-]\s*([\s\S]*)$/i);
 
   const stopIndex = answerMatch ? withoutQNum.indexOf(answerMatch[0]) : withoutQNum.length;
 
   const options = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < optPositions.length; i++) {
     const startIdx = optPositions[i].contentStart;
     const endIdx = i + 1 < optPositions.length ? optPositions[i + 1].markerStart : stopIndex;
     const optText = withoutQNum.slice(startIdx, Math.max(startIdx, endIdx)).replace(/\n/g, " ").trim();
     options.push(optText);
   }
 
-  const correct = answerMatch ? "ABCD".indexOf(answerMatch[1].toUpperCase()) : null;
+  const correct = answerMatch ? "ABCDE".indexOf(answerMatch[1].toUpperCase()) : null;
   const explanation = explanationMatch ? explanationMatch[1].replace(/\n/g, " ").trim() : "";
 
   const hasQuestion = questionText.length > 0;
@@ -2631,7 +2633,7 @@ function SearchOverlay({ bank, notesBank, onClose }) {
                     color: i === openQuestion.correct ? T.emerald : T.ink,
                   }}
                 >
-                  {["A", "B", "C", "D"][i]}. {opt}
+                  {["A", "B", "C", "D", "E"][i]}. {opt}
                 </div>
               ))}
             </div>
@@ -5009,7 +5011,10 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   // per quiz), so the correct answer isn't always in the same A/B/C/D slot on repeats.
   const shuffledQuestions = useMemo(() => questions.map(shuffleQuestionOptions), [questions]);
   const q = shuffledQuestions[idx];
-  const letters = ["A", "B", "C", "D"];
+  // Options are A/B/C/D by default; MBBS past-paper questions can have a 5th
+  // option (E), so the letter list follows however many options this
+  // question actually has instead of assuming 4.
+  const letters = ["A", "B", "C", "D", "E"].slice(0, q.options.length);
   const hasAnswered = answers[idx] !== undefined;
   // In FLP mode, right/wrong and the explanation stay hidden until the whole
   // paper is submitted — same as a real exam. Everywhere else (normal
@@ -5215,7 +5220,8 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
 function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark, explanationFeedback, onVoteExplanation, onReportQuestion, hideScore }) {
   const { questions, answers, correct } = result;
   const pct = Math.round((correct / questions.length) * 100);
-  const letters = ["A", "B", "C", "D"];
+  // Up to 5 options (A-E) — MBBS past-paper questions can have a 5th option.
+  const letters = ["A", "B", "C", "D", "E"];
 
   return (
     <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
@@ -5962,7 +5968,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         const parsed = parseQuestionBlock(block);
         const entry = {
           question: parsed.question,
-          options: parsed.options.length === 4 ? parsed.options : ["", "", "", ""],
+          options: parsed.options.length >= 4 ? parsed.options : ["", "", "", ""],
           correct: parsed.correct !== null ? parsed.correct : 0,
           explanation: parsed.explanation,
           answer_source: parsed.complete ? "text" : "missing",
@@ -6238,7 +6244,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
         const parsed = parseQuestionBlock(block);
         const entry = {
           question: parsed.question,
-          options: parsed.options.length === 4 ? parsed.options : ["", "", "", ""],
+          options: parsed.options.length >= 4 ? parsed.options : ["", "", "", ""],
           correct: parsed.correct !== null ? parsed.correct : 0,
           explanation: parsed.explanation,
           answer_source: parsed.complete ? "text" : "missing",
@@ -6767,7 +6773,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
               {form.options.map((opt, i) => (
                 <div key={i} className="flex items-center gap-3">
                   <Bubble
-                    letter={["A", "B", "C", "D"][i]}
+                    letter={["A", "B", "C", "D", "E"][i]}
                     state={form.correct === i ? "correct" : "idle"}
                     onClick={() => setForm({ ...form, correct: i })}
                   />
@@ -6781,8 +6787,29 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     className="flex-1 px-3 py-2"
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   />
+                  {form.program === "MBBS" && form.options.length === 5 && i === 4 && (
+                    <button
+                      onClick={() => {
+                        const o = form.options.slice(0, 4);
+                        setForm({ ...form, options: o, correct: form.correct === 4 ? 0 : form.correct });
+                      }}
+                      title="Remove option E"
+                      style={{ color: T.rose }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               ))}
+              {form.program === "MBBS" && form.options.length === 4 && (
+                <button
+                  onClick={() => setForm({ ...form, options: [...form.options, ""] })}
+                  className="flex items-center gap-2 text-xs px-3 py-1.5"
+                  style={{ border: `1px solid ${T.line}`, color: T.inkSoft }}
+                >
+                  <Plus size={12} /> Add option E (for past papers with 5 options)
+                </button>
+              )}
             </div>
             <div className="mb-6">
               <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation (optional)</label>
@@ -7029,7 +7056,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                         {m.options.map((opt, oi) => (
                           <div key={oi} className="flex items-center gap-3">
                             <Bubble
-                              letter={["A", "B", "C", "D"][oi]}
+                              letter={["A", "B", "C", "D", "E"][oi]}
                               state={m.correct === oi ? "correct" : "idle"}
                               onClick={() => updateBulkResult(idx, { correct: oi })}
                             />
@@ -7043,8 +7070,26 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                               className="flex-1 px-3 py-1.5 text-sm"
                               style={{ border: `1px solid ${T.line}`, background: T.card }}
                             />
+                            {bulkForm.program === "MBBS" && m.options.length === 5 && oi === 4 && (
+                              <button
+                                onClick={() => updateBulkResult(idx, { options: m.options.slice(0, 4), correct: m.correct === 4 ? 0 : m.correct })}
+                                title="Remove option E"
+                                style={{ color: T.rose }}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         ))}
+                        {bulkForm.program === "MBBS" && m.options.length === 4 && (
+                          <button
+                            onClick={() => updateBulkResult(idx, { options: [...m.options, ""] })}
+                            className="flex items-center gap-1 text-xs px-2 py-1"
+                            style={{ border: `1px solid ${T.line}`, color: T.inkSoft }}
+                          >
+                            <Plus size={12} /> Add option E
+                          </button>
+                        )}
                       </div>
                       <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Explanation</label>
                       <textarea
@@ -7533,7 +7578,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                               {m.options.map((opt, oi) => (
                                 <div key={oi} className="flex items-center gap-3">
                                   <Bubble
-                                    letter={["A", "B", "C", "D"][oi]}
+                                    letter={["A", "B", "C", "D", "E"][oi]}
                                     state={m.correct === oi ? "correct" : "idle"}
                                     onClick={() => updateFLPBulkResult(idx, { correct: oi })}
                                   />
