@@ -4471,11 +4471,10 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
                 <div
                   key={name}
                   role="button"
-                  tabIndex={n === 0 ? -1 : 0}
-                  aria-disabled={n === 0}
-                  onClick={() => { if (n !== 0) (isNested ? onOpenSubfolders(f) : onOpenFolder(name)); }}
-                  onKeyDown={(e) => { if (e.key === "Enter" && n !== 0) (isNested ? onOpenSubfolders(f) : onOpenFolder(name)); }}
-                  className={`text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 ${n === 0 ? "opacity-40" : "cursor-pointer"}`}
+                  tabIndex={0}
+                  onClick={() => (isNested ? onOpenSubfolders(f) : onOpenFolder(name))}
+                  onKeyDown={(e) => { if (e.key === "Enter") (isNested ? onOpenSubfolders(f) : onOpenFolder(name)); }}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -4497,6 +4496,11 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
                         {isAdmin && <DeleteMcqsButton label={name} ids={idsByName[name] || []} onDelete={onDeleteMcqs} />}
                       </div>
                     </div>
+                    {!isNested && (
+                      <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                        {n} question{n === 1 ? "" : "s"}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -4568,11 +4572,10 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
                 <div
                   key={f}
                   role="button"
-                  tabIndex={n === 0 ? -1 : 0}
-                  aria-disabled={n === 0}
-                  onClick={() => { if (n !== 0) onOpenFolder(f); }}
-                  onKeyDown={(e) => { if (e.key === "Enter" && n !== 0) onOpenFolder(f); }}
-                  className={`text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 ${n === 0 ? "opacity-40" : "cursor-pointer"}`}
+                  tabIndex={0}
+                  onClick={() => onOpenFolder(f)}
+                  onKeyDown={(e) => { if (e.key === "Enter") onOpenFolder(f); }}
+                  className="text-left p-6 flex items-start gap-4 transition-transform hover:-translate-y-0.5 cursor-pointer"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -4581,13 +4584,18 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
                   >
                     <FileText size={20} style={{ color: "#fff" }} />
                   </div>
-                  <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
-                    <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
-                      {f}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <ShareButton label={f} state={{ v: "pastpaper-setup", p: program, pf: f }} />
-                      {isAdmin && <DeleteMcqsButton label={f} ids={idsByName[f] || []} onDelete={onDeleteMcqs} />}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-lg">
+                        {f}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <ShareButton label={f} state={{ v: "pastpaper-setup", p: program, pf: f }} />
+                        {isAdmin && <DeleteMcqsButton label={f} ids={idsByName[f] || []} onDelete={onDeleteMcqs} />}
+                      </div>
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                      {n} question{n === 1 ? "" : "s"}
                     </div>
                   </div>
                 </div>
@@ -4634,40 +4642,47 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-3xl mb-1">
           {folder}
         </h1>
-        <div className="mb-8">
-          <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
-            Number of questions (max {maxCount})
-          </label>
-          <input
-            type="range"
-            min={1}
-            max={Math.max(1, maxCount)}
-            value={chosenCount}
-            onChange={(e) => setCount(Number(e.target.value))}
-            className="w-full"
-          />
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-lg mt-1">
-            {chosenCount} questions
+        {maxCount === 0 ? (
+          <div className="p-6 text-sm" style={{ border: `1px dashed ${T.line}`, color: T.inkSoft }}>
+            No questions have been added to this folder yet — check back soon.
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="mb-8">
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Number of questions (max {maxCount})
+              </label>
+              <input
+                type="range"
+                min={1}
+                max={Math.max(1, maxCount)}
+                value={chosenCount}
+                onChange={(e) => setCount(Number(e.target.value))}
+                className="w-full"
+              />
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-lg mt-1">
+                {chosenCount} questions
+              </div>
+            </div>
 
-        <div className="mb-8">
-          <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
-            <input type="checkbox" checked={timed} onChange={(e) => setTimed(e.target.checked)} />
-            <span>
-              Timed Mock Exam ({SECONDS_PER_Q}s per question — {Math.round((chosenCount * SECONDS_PER_Q) / 60)} min total)
-            </span>
-          </label>
-        </div>
+            <div className="mb-8">
+              <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
+                <input type="checkbox" checked={timed} onChange={(e) => setTimed(e.target.checked)} />
+                <span>
+                  Timed Mock Exam ({SECONDS_PER_Q}s per question — {Math.round((chosenCount * SECONDS_PER_Q) / 60)} min total)
+                </span>
+              </label>
+            </div>
 
-        <button
-          disabled={maxCount === 0}
-          onClick={() => onStart(folderQuestions.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
-          className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
-          style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
-        >
-          {timed ? "Begin timed exam →" : "Begin practice →"}
-        </button>
+            <button
+              onClick={() => onStart(folderQuestions.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
+              className="px-6 py-3 text-sm tracking-wide"
+              style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              {timed ? "Begin timed exam →" : "Begin practice →"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
