@@ -3302,9 +3302,8 @@ function Home({
               return (
                 <button
                   key={p.key}
-                  disabled={n === 0}
                   onClick={() => onOpenPastPapers(p.key)}
-                  className="text-left p-5 flex items-center gap-3 disabled:opacity-40"
+                  className="text-left p-5 flex items-center gap-3"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <Icon size={22} />
