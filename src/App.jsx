@@ -193,7 +193,7 @@ export async function signUp(email, password, extra = {}) {
   return supabase.auth.signUp({
     email,
     password,
-    options: { data: { name: extra.name || "", course: extra.course || "" } },
+    options: { data: { name: extra.name || "", course: extra.course || "", mbbsYear: extra.mbbsYear || "" } },
   });
 }
 export async function signIn(email, password) {
@@ -1226,12 +1226,20 @@ const MDCAT_TOPICS = {
 };
 
 const MBBS_STRUCTURE = {
+  "1st Year": {
+    "Block A": ["Anatomy", "Physiology", "Biochemistry", "Histology", "Embryology", "MINORS"],
+    "Block B": ["Anatomy", "Physiology", "Biochemistry", "Histology", "Embryology", "MINORS"],
+    "Block C": ["Anatomy", "Physiology", "Biochemistry", "Histology", "Embryology", "MINORS"],
+  },
   "2nd Year": {
     "Block D": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
     "Block E": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
     "Block F": ["Anatomy", "Biochemistry", "Physiology", "Histology", "Embryology", "MINORS"],
   },
 };
+// Display labels for each MBBS year — used at signup and anywhere the year
+// needs a friendlier name than the internal MBBS_STRUCTURE key.
+const MBBS_YEAR_LABELS = { "1st Year": "First Year MBBS", "2nd Year": "2nd Year MBBS" };
 
 // ---------- MBBS nested topic / sub-topic tree (per Block → Subject) ----------
 // Each subject maps to an array of "items". An item is either:
@@ -1243,6 +1251,30 @@ const MBBS_STRUCTURE = {
 // MINORS, or Anatomy/Biochemistry in Block F) has no topic browsing defined yet —
 // tapping that subject goes straight to quiz setup, exactly like before.
 const MBBS_TOPICS = {
+  "Block A": {
+    Anatomy: ["General Anatomy"],
+    Physiology: ["Foundation Module", "BLOOD Module"],
+    Biochemistry: ["Foundation Module", "BLOOD Module"],
+  },
+  "Block B": {
+    Anatomy: [
+      {
+        name: "Upper limbs",
+        children: ["Osteology", "Regions", "Muscles", "Brachial plexus", "Vasculatures & lymphatic system", "Joints & surface anatomy"],
+      },
+      {
+        name: "Lower limbs",
+        children: ["Osteology", "Gluteus anatomy", "Thigh anatomy", "Leg anatomy", "Foot anatomy", "Joints & surface anatomy", "Clinicals Mcqs"],
+      },
+    ],
+    Physiology: ["Musculoskeletal system"],
+    Biochemistry: ["Proteins", "Fats soluble vitamins", "Minerals"],
+  },
+  "Block C": {
+    Anatomy: ["Thorax part I", "Thorax part II"],
+    Physiology: ["Circulation", "Cardiac physiology", "Respiratory physiology"],
+    Biochemistry: ["Lipid", "Enzymes"],
+  },
   "Block D": {
     Anatomy: [
       {
@@ -1339,6 +1371,9 @@ const PAST_PAPER_FOLDERS = {
     { name: "KMU CAT 2026", subfolders: ["KMU CAT 2026 First Test", "KMU CAT 2026 2nd Test", "KMU CAT 2026 3rd Test"] },
   ],
   MBBS: [
+    "KMU Block A 2020", "KMU Block A 2021", "KMU Block A 2022", "KMU Block A 2023", "KMU Block A 2024",
+    "KMU Block B 2020", "KMU Block B 2021", "KMU Block B 2022", "KMU Block B 2023", "KMU Block B 2024",
+    "KMU Block C 2020", "KMU Block C 2021", "KMU Block C 2022", "KMU Block C 2023", "KMU Block C 2024",
     "KMU Block D 2020", "KMU Block D 2021", "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
     "KMU Block E 2020", "KMU Block E 2021", "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
     "KMU Block F 2020", "KMU Block F 2021", "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024",
@@ -3175,6 +3210,7 @@ function Home({
   isDark, onToggleTheme,
   userId,
   flpShareNav, onClearFLPShareNav,
+  userMbbsYear,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -3817,7 +3853,7 @@ function Home({
 
       {searchOpen && (
         <SearchOverlay
-          bank={bank.filter((q) => programs.some((p) => p.key === q.program))}
+          bank={bank.filter((q) => programs.some((p) => p.key === q.program) && (!userMbbsYear || q.program !== "MBBS" || (q.year || "") === userMbbsYear))}
           notesBank={(notesBank || []).filter((n) => programs.some((p) => p.key === n.program))}
           onClose={() => setSearchOpen(false)}
         />
@@ -4004,7 +4040,7 @@ function BackHomeBar({ onBack, backLabel = "Back", onHome }) {
   );
 }
 
-function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, onHome, isAdmin, onDeleteMcqs }) {
+function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, onHome, isAdmin, onDeleteMcqs, restrictedMbbsYear }) {
   const progQuestions = bank.filter((q) => q.program === program);
   const isMBBS = program === "MBBS";
   const isMDCAT = TOPIC_PROGRAMS.includes(program);
@@ -4012,7 +4048,8 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
 
   const groups = useMemo(() => {
     if (isMBBS) {
-      return Object.keys(MBBS_STRUCTURE).map((name) => {
+      const years = restrictedMbbsYear ? [restrictedMbbsYear] : Object.keys(MBBS_STRUCTURE);
+      return years.map((name) => {
         const qs = progQuestions.filter((q) => (q.year || "") === name);
         return { name, count: qs.length, ids: qs.map((q) => q.id),
         // MBBS stats keys look like "Year | Block | Subject" — match on the year prefix.
@@ -4037,7 +4074,7 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
       ids: progQuestions.filter((q) => q.subject === name).map((q) => q.id),
       accuracy: accuracyFor(bySubject, (key) => key === name),
     }));
-  }, [progQuestions, isMBBS, isMDCAT, bySubject]);
+  }, [progQuestions, isMBBS, isMDCAT, bySubject, restrictedMbbsYear]);
 
   const progInfo = PROGRAMS.find((p) => p.key === program);
 
@@ -4455,8 +4492,16 @@ function MbbsTopicPage({ program, year, block, subject, path, items, bank, onBac
 }
 
 // ---------- Past Papers: named year/block folders per program ----------
-function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome, isAdmin, onDeleteMcqs }) {
-  const folders = PAST_PAPER_FOLDERS[program] || [];
+function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfolders, onHome, isAdmin, onDeleteMcqs, restrictedMbbsBlocks }) {
+  const allFolders = PAST_PAPER_FOLDERS[program] || [];
+  // MBBS students only see past-paper folders for their own year's blocks
+  // (e.g. Block A/B/C for 1st Year) — same restriction as topic browsing.
+  const folders = (restrictedMbbsBlocks && restrictedMbbsBlocks.length > 0)
+    ? allFolders.filter((f) => {
+        const name = typeof f === "string" ? f : f.name;
+        return restrictedMbbsBlocks.some((blk) => name.includes(blk));
+      })
+    : allFolders;
   const idsByName = useMemo(() => {
     const c = {};
     folders.forEach((f) => {
@@ -5412,6 +5457,8 @@ function AuthScreen({ onAuthed }) {
   const [password, setPassword] = useState("");
   const [course, setCourse] = useState("");
   const [courseOpen, setCourseOpen] = useState(false);
+  const [mbbsYear, setMbbsYear] = useState("");
+  const [mbbsYearOpen, setMbbsYearOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -5457,9 +5504,13 @@ function AuthScreen({ onAuthed }) {
       setError("Please select your course.");
       return;
     }
+    if (mode === "signup" && course === "MBBS" && !mbbsYear) {
+      setError("Please select your MBBS year.");
+      return;
+    }
     setBusy(true);
     if (mode === "signup") {
-      const { data, error: err } = await signUp(email.trim(), password, { name: name.trim(), course });
+      const { data, error: err } = await signUp(email.trim(), password, { name: name.trim(), course, mbbsYear: course === "MBBS" ? mbbsYear : "" });
       setBusy(false);
       if (err) {
         setError(err.message);
@@ -5625,7 +5676,7 @@ function AuthScreen({ onAuthed }) {
                   <button
                     key={c.key}
                     type="button"
-                    onClick={() => { setCourse(c.key); setCourseOpen(false); }}
+                    onClick={() => { setCourse(c.key); setCourseOpen(false); if (c.key !== "MBBS") setMbbsYear(""); }}
                     className="w-full text-left px-3 py-3 text-sm"
                     style={{ color: course === c.key ? accent : "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
                   >
@@ -5636,6 +5687,47 @@ function AuthScreen({ onAuthed }) {
             )}
             <p className="text-xs mt-1" style={{ color: "#8FA0C4" }}>
               You'll only see content for the course you pick — MDCAT, KMU CAT, BSN, or MBBS.
+            </p>
+          </div>
+        )}
+
+        {!isLogin && !isForgot && course === "MBBS" && (
+          <div className="mb-2 relative">
+            <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#B9C4DE" }}>
+              MBBS Year
+            </label>
+            <button
+              type="button"
+              onClick={() => setMbbsYearOpen((o) => !o)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-3"
+              style={{ border: `1px solid rgba(255,255,255,0.3)`, background: "rgba(255,255,255,0.06)" }}
+            >
+              <span className="flex items-center gap-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: mbbsYear ? "#fff" : "#8FA0C4" }}>
+                <GraduationCap size={14} color={accent} />
+                {mbbsYear ? MBBS_YEAR_LABELS[mbbsYear] : "Select your MBBS year…"}
+              </span>
+              <ChevronDown size={16} color="#8FA0C4" />
+            </button>
+            {mbbsYearOpen && (
+              <div
+                className="absolute left-0 right-0 mt-1 z-10"
+                style={{ background: "#0F2748", border: `1px solid rgba(255,255,255,0.2)` }}
+              >
+                {Object.keys(MBBS_STRUCTURE).map((y) => (
+                  <button
+                    key={y}
+                    type="button"
+                    onClick={() => { setMbbsYear(y); setMbbsYearOpen(false); }}
+                    className="w-full text-left px-3 py-3 text-sm"
+                    style={{ color: mbbsYear === y ? accent : "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+                  >
+                    {MBBS_YEAR_LABELS[y] || y}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-xs mt-1" style={{ color: "#8FA0C4" }}>
+              You'll only see {MBBS_YEAR_LABELS[mbbsYear] || "your year's"} content throughout the app.
             </p>
           </div>
         )}
@@ -8278,13 +8370,26 @@ export default function App() {
   // this feature (or the ?admin= entry point) have no course set, so they still see all programs.
   const userCourse = !isAdminURL ? user?.user_metadata?.course || null : null;
   const visiblePrograms = userCourse ? PROGRAMS.filter((p) => p.key === userCourse) : PROGRAMS;
+  // For MBBS students only: which year they picked at signup (e.g. "1st Year").
+  // Accounts created before this existed have no year set, so they still see
+  // every MBBS year — same "don't break existing accounts" fallback as above.
+  const userMbbsYear = userCourse === "MBBS" ? (user?.user_metadata?.mbbsYear || null) : null;
+  // Block names that belong to the student's MBBS year (e.g. ["Block A","Block B","Block C"]).
+  // Empty when not an MBBS student or no year is set, meaning "no restriction".
+  const userMbbsBlocks = userMbbsYear ? Object.keys(MBBS_STRUCTURE[userMbbsYear] || {}) : [];
 
   const openProgram = (p) => {
     if (userCourse && p !== userCourse) return; // defensive: students can't jump into another course
     setProgram(p); setYear(null); setBlock(null); setTopic(null); setMbbsPath([]); setView("program");
   };
-  const openYear = (y) => { setYear(y); setBlock(null); setView("year"); };
-  const openBlock = (b) => { setBlock(b); setMbbsPath([]); setView("block"); };
+  const openYear = (y) => {
+    if (userMbbsYear && y !== userMbbsYear) return; // defensive: MBBS students can't jump into another year (e.g. via an old share link)
+    setYear(y); setBlock(null); setView("year");
+  };
+  const openBlock = (b) => {
+    if (userMbbsBlocks.length > 0 && !userMbbsBlocks.includes(b)) return; // defensive: block belongs to a different MBBS year
+    setBlock(b); setMbbsPath([]); setView("block");
+  };
   const openSubject = (s) => {
     setSubject(s);
     if (program === "MBBS") {
@@ -8339,7 +8444,13 @@ export default function App() {
     setView("pastpaper-folders");
   };
   const openPastPaperSubfolders = (parentFolder) => { setPastPaperParent(parentFolder); setView("pastpaper-subfolders"); };
-  const openPastPaperFolder = (f) => { setPastPaperFolder(f); setView("pastpaper-setup"); };
+  const openPastPaperFolder = (f) => {
+    // Defensive: an MBBS student can't open a past-paper folder outside their
+    // own year's blocks (e.g. via a stale link), even though the folder list
+    // they're shown is already filtered to just their year.
+    if (userMbbsBlocks.length > 0 && program === "MBBS" && !userMbbsBlocks.some((blk) => f.includes(blk))) return;
+    setPastPaperFolder(f); setView("pastpaper-setup");
+  };
   const startPastPaperQuiz = (qs, opts = {}) => {
     setQuizQuestions(qs);
     setQuizMeta({ label: pastPaperFolder, timeLimit: opts.timeLimit || null, mode: "pastpaper" });
@@ -8365,6 +8476,14 @@ export default function App() {
     window.history.replaceState({}, "", window.location.pathname + (clean ? `?${clean}` : ""));
     if (!s || !s.v) return;
     if (userCourse && s.p && s.p !== userCourse) return; // student's course doesn't match the shared program
+    if (s.p === "MBBS" && userMbbsYear) {
+      // MBBS student with a fixed year: ignore a shared link pointing at
+      // another year's content (e.g. "y":"2nd Year" or "b":"Block D" while
+      // this student is on "1st Year") rather than letting them view it.
+      if ("y" in s && s.y && s.y !== userMbbsYear) return;
+      if ("b" in s && s.b && userMbbsBlocks.length > 0 && !userMbbsBlocks.includes(s.b)) return;
+      if (s.v === "pastpaper-setup" && s.pf && userMbbsBlocks.length > 0 && !userMbbsBlocks.some((blk) => s.pf.includes(blk))) return;
+    }
     if (s.p) setProgram(s.p);
     if ("y" in s) setYear(s.y || null);
     if ("b" in s) setBlock(s.b || null);
@@ -8391,7 +8510,7 @@ export default function App() {
       return;
     }
     setView(s.v);
-  }, [loading, userCourse]);
+  }, [loading, userCourse, userMbbsYear]);
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
   // Deterministic shuffle so everyone gets the same "random" order for a given day.
@@ -8420,8 +8539,10 @@ export default function App() {
   const openDailyChallenge = () => {
     // Only pull from the student's own course — previously this pulled from
     // the entire bank, so e.g. an MBBS student's Daily Challenge could include
-    // MDCAT/KMU CAT questions instead of MBBS ones.
-    const courseBank = userCourse ? bank.filter((q) => q.program === userCourse) : bank;
+    // MDCAT/KMU CAT questions instead of MBBS ones. For MBBS, also restrict to
+    // the student's own year so an unpicked year's questions never surface.
+    let courseBank = userCourse ? bank.filter((q) => q.program === userCourse) : bank;
+    if (userMbbsYear) courseBank = courseBank.filter((q) => (q.year || "") === userMbbsYear);
     const picked = seededShuffle(courseBank, todayStr()).slice(0, Math.min(10, courseBank.length));
     startSpecialQuiz(picked, "Daily Challenge", "daily", "No questions available yet — check back once the bank has some MCQs.");
   };
@@ -8940,6 +9061,7 @@ export default function App() {
         userId={user?.id}
         flpShareNav={flpShareNav}
         onClearFLPShareNav={() => setFlpShareNav(null)}
+        userMbbsYear={userMbbsYear}
       />
     );
   }
@@ -8989,6 +9111,7 @@ export default function App() {
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
+        restrictedMbbsYear={program === "MBBS" ? userMbbsYear : null}
       />
     );
   }
@@ -9092,6 +9215,7 @@ export default function App() {
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
+        restrictedMbbsBlocks={program === "MBBS" ? userMbbsBlocks : null}
       />
     );
   }
