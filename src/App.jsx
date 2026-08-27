@@ -532,7 +532,10 @@ export async function saveFLPTests(flpTests) {
 // or its very first load hadn't finished yet), saving "[...flpTests, test]"
 // would silently overwrite the real list on the server with that stale
 // local one — which looks exactly like "papers I made earlier disappeared".
-// Returns the new full list on success, or null on failure (nothing saved).
+// Returns { list, error }: list is the new full list on success (error is
+// null), or list is null and error holds the real Supabase error message on
+// failure — surfaced to the admin so a real cause (missing column, RLS,
+// etc.) is visible on-screen instead of only in a browser console.
 export async function addFLPTestRemote(test) {
   try {
     const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
@@ -541,10 +544,11 @@ export async function addFLPTestRemote(test) {
     const next = [...current, test];
     const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
     if (updateError) throw updateError;
-    return next;
+    return { list: next, error: null };
   } catch (e) {
+    const message = e?.message || String(e);
     console.error("Add FLP test failed (add a 'flp_tests' jsonb column to app_data):", e);
-    return null;
+    return { list: null, error: message };
   }
 }
 export async function removeFLPTestRemote(id) {
@@ -555,10 +559,11 @@ export async function removeFLPTestRemote(id) {
     const next = current.filter((t) => t.id !== id);
     const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
     if (updateError) throw updateError;
-    return next;
+    return { list: next, error: null };
   } catch (e) {
+    const message = e?.message || String(e);
     console.error("Remove FLP test failed:", e);
-    return null;
+    return { list: null, error: message };
   }
 }
 
@@ -3169,6 +3174,7 @@ function Home({
   onOpenPastPapers,
   isDark, onToggleTheme,
   userId,
+  flpShareNav, onClearFLPShareNav,
 }) {
   const [navTab, setNavTab] = useState("home");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -3183,6 +3189,19 @@ function Home({
     setFlpPhoneInput(stats?.phone || "");
     setPendingFLPTest(t);
   };
+  // A friend opened a shared FLP link: jump to the FLP tab, and if the link
+  // pointed at one specific paper, open the "before you start" prompt for it
+  // as soon as the papers have loaded.
+  useEffect(() => {
+    if (!flpShareNav) return;
+    setNavTab("flp");
+    if (flpTests.length === 0) return; // wait for papers to load before looking one up
+    if (flpShareNav.testId) {
+      const t = flpTests.find((x) => x.id === flpShareNav.testId);
+      if (t) openFLPDetailsPrompt(t);
+    }
+    onClearFLPShareNav();
+  }, [flpShareNav, flpTests]);
   const confirmFLPStart = () => {
     if (!flpNameInput.trim() || !flpPhoneInput.trim()) return;
     const t = pendingFLPTest;
@@ -3374,10 +3393,13 @@ function Home({
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {myTests.map((t) => (
-                <button
+                <div
                   key={t.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => openFLPDetailsPrompt(t)}
-                  className="text-left p-5 flex items-center gap-4"
+                  onKeyDown={(e) => { if (e.key === "Enter") openFLPDetailsPrompt(t); }}
+                  className="text-left p-5 flex items-center gap-4 cursor-pointer"
                   style={{ background: T.card, border: `1px solid ${T.line}` }}
                 >
                   <div
@@ -3386,14 +3408,15 @@ function Home({
                   >
                     <FileCheck2 size={22} style={{ color: "#fff" }} />
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{t.title}</div>
                     <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
                       {t.questionIds.length} MCQs · {Math.round(t.timeSeconds / 60)} min
                     </div>
                   </div>
+                  <ShareButton label={t.title} state={{ v: "flp", p: t.program, ftId: t.id }} />
                   <ChevronRight size={16} style={{ color: T.inkSoft }} />
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -8049,6 +8072,10 @@ export default function App() {
   const [mbbsPath, setMbbsPath] = useState([]);
   const [pastPaperFolder, setPastPaperFolder] = useState(null);
   const [pastPaperParent, setPastPaperParent] = useState(null);
+  // Set when a friend opens a shared FLP link (see the deep-link effect below)
+  // — tells Home's "flp" tab to open itself, and optionally which paper to
+  // prompt for. Cleared by Home once it's acted on it.
+  const [flpShareNav, setFlpShareNav] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
   const [result, setResult] = useState(null);
   const [quizMeta, setQuizMeta] = useState({ label: "", timeLimit: null, mode: "normal" });
@@ -8356,6 +8383,12 @@ export default function App() {
     } else if (s.v === "pastpaper-folders") {
       setPastPaperFolder(null);
       setPastPaperParent(null);
+    } else if (s.v === "flp") {
+      // FLP lives inside the Home screen's own "flp" tab, not a standalone
+      // view, so land on Home and let it pick up flpShareNav from there.
+      setFlpShareNav({ testId: s.ftId || null });
+      setView("home");
+      return;
     }
     setView(s.v);
   }, [loading, userCourse]);
@@ -8648,23 +8681,25 @@ export default function App() {
   // live list from Supabase first (see addFLPTestRemote/removeFLPTestRemote)
   // instead of trusting this tab's own `flpTests` copy, so a stale local copy
   // can never silently wipe out papers saved from elsewhere. Return true/false
-  // so the caller can show a real error instead of assuming success.
+  // so the caller can show a real error instead of assuming success. The real
+  // Supabase error message is shown on-screen (not just logged to console) so
+  // it's visible on a phone without needing devtools.
   const addFLPTestHandler = async (test) => {
-    const next = await addFLPTestRemote(test);
-    if (next === null) {
-      alert("Could not save this FLP paper to the server — check your internet connection and try again. Nothing was saved.");
+    const { list, error } = await addFLPTestRemote(test);
+    if (list === null) {
+      alert(`Could not save this FLP paper to the server. Nothing was saved.\n\nError detail: ${error}`);
       return false;
     }
-    setFlpTests(next);
+    setFlpTests(list);
     return true;
   };
   const deleteFLPTestHandler = async (id) => {
-    const next = await removeFLPTestRemote(id);
-    if (next === null) {
-      alert("Could not delete this FLP paper — check your internet connection and try again.");
+    const { list, error } = await removeFLPTestRemote(id);
+    if (list === null) {
+      alert(`Could not delete this FLP paper.\n\nError detail: ${error}`);
       return false;
     }
-    setFlpTests(next);
+    setFlpTests(list);
     return true;
   };
 
@@ -8903,6 +8938,8 @@ export default function App() {
         isDark={isDark}
         onToggleTheme={toggleTheme}
         userId={user?.id}
+        flpShareNav={flpShareNav}
+        onClearFLPShareNav={() => setFlpShareNav(null)}
       />
     );
   }
