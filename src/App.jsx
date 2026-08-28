@@ -807,6 +807,50 @@ export async function loadDailyReminder() {
     return DEFAULT_DAILY_REMINDER;
   }
 }
+
+// Combines what used to be 13 separate round trips (loadNotes, loadNotifications,
+// loadReviews, loadSyllabusItems, loadGuidelineItems, loadContactItems,
+// loadSocialLinksMap, loadExamDates, loadExplanationFeedback, loadQuestionReports,
+// loadDiscussions, loadDailyReminder, loadFLPTests — all reading different jsonb
+// columns off the very same `app_data` row) into ONE query. Even run in parallel,
+// 13 simultaneous requests over a mobile connection add real, noticeable delay to
+// every login — this was a meaningful chunk of "the app feels slow". The individual
+// load*() functions above are kept as-is and still used for their own on-demand
+// refreshes elsewhere; this combined loader is only for the initial app-open sequence.
+export async function loadAppData() {
+  const empty = {
+    notes: [], notifications: [], reviews: [], syllabus: [], guidelines: [], contact_items: [],
+    social_links: {}, exam_dates: {}, explanation_feedback: {}, question_reports: [], discussions: {},
+    daily_reminder: DEFAULT_DAILY_REMINDER, flp_tests: [],
+  };
+  try {
+    const { data, error } = await supabase
+      .from("app_data")
+      .select("notes, notifications, reviews, syllabus, guidelines, contact_items, social_links, exam_dates, explanation_feedback, question_reports, discussions, daily_reminder, flp_tests")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return empty;
+    return {
+      notes: data.notes || [],
+      notifications: data.notifications || [],
+      reviews: data.reviews || [],
+      syllabus: data.syllabus || [],
+      guidelines: data.guidelines || [],
+      contact_items: data.contact_items || [],
+      social_links: data.social_links || {},
+      exam_dates: data.exam_dates || {},
+      explanation_feedback: data.explanation_feedback || {},
+      question_reports: data.question_reports || [],
+      discussions: data.discussions || {},
+      daily_reminder: { ...DEFAULT_DAILY_REMINDER, ...(data.daily_reminder || {}) },
+      flp_tests: data.flp_tests || [],
+    };
+  } catch (e) {
+    console.error("Load app data failed:", e);
+    return empty;
+  }
+}
 export async function saveDailyReminder(dailyReminder) {
   try {
     const { data, error } = await supabase.from("app_data").update({ daily_reminder: dailyReminder }).eq("id", 1).select("id");
@@ -8265,6 +8309,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     (async () => {
+     try {
       // Bandwidth saver: check the tiny bank_version number first. If it matches
       // what we already have cached on this device, skip re-downloading the
       // entire (large) question bank — reuse the local cache instead. This is
@@ -8324,23 +8369,23 @@ export default function App() {
         }
       }
       setBank(b);
-      const [n, notifs, rv, syl, gui, con, sl, ed, ef, qr, disc, dr, flp] = await Promise.all([
-        loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(), loadSocialLinksMap(), loadExamDates(),
-        loadExplanationFeedback(), loadQuestionReports(), loadDiscussions(), loadDailyReminder(), loadFLPTests(),
-      ]);
-      setNotesBank(n);
-      setNotifications(notifs);
-      setReviews(rv);
-      setSyllabusItems(syl);
-      setGuidelineItems(gui);
-      setContactItems(con);
-      setSocialLinks(sl);
-      setExamDates(ed);
-      setExplanationFeedback(ef);
-      setQuestionReports(qr);
-      setDiscussions(disc);
-      setDailyReminder(dr);
-      setFlpTests(flp);
+      // One combined query instead of 13 separate ones (see loadAppData) — this
+      // was a meaningful chunk of how slow/stuck login could feel, especially
+      // on mobile data.
+      const appData = await loadAppData();
+      setNotesBank(appData.notes);
+      setNotifications(appData.notifications);
+      setReviews(appData.reviews);
+      setSyllabusItems(appData.syllabus);
+      setGuidelineItems(appData.guidelines);
+      setContactItems(appData.contact_items);
+      setSocialLinks(appData.social_links);
+      setExamDates(appData.exam_dates);
+      setExplanationFeedback(appData.explanation_feedback);
+      setQuestionReports(appData.question_reports);
+      setDiscussions(appData.discussions);
+      setDailyReminder(appData.daily_reminder);
+      setFlpTests(appData.flp_tests);
       const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
       if (user) {
         const st = await loadUserStats(user.id);
@@ -8358,7 +8403,14 @@ export default function App() {
       } else {
         setStats(emptyStats);
       }
+     } catch (e) {
+      // Guarantees the loading screen never gets stuck forever — if anything
+      // unexpected throws anywhere above, this is caught here instead of
+      // silently hanging (which looked exactly like "sign in doesn't work").
+      console.error("App data bootstrap failed:", e);
+     } finally {
       setLoading(false);
+     }
     })();
   }, [user]);
 
