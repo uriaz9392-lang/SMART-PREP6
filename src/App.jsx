@@ -824,9 +824,16 @@ export async function loadAppData() {
     daily_reminder: DEFAULT_DAILY_REMINDER, flp_tests: [],
   };
   try {
+    // select("*") deliberately, not a named column list — naming columns meant
+    // ANY single missing/renamed column made the WHOLE query fail, silently
+    // wiping out everything else in this response (reviews, FLP tests, community
+    // links, etc. all "disappeared" together even though nothing was actually
+    // deleted server-side — this was a serious bug, now fixed). select("*")
+    // simply returns whatever columns exist; anything absent still falls back
+    // safely below via `|| []` / `|| {}`.
     const { data, error } = await supabase
       .from("app_data")
-      .select("notes, notifications, reviews, syllabus, guidelines, contact_items, social_links, exam_dates, explanation_feedback, question_reports, discussions, daily_reminder, flp_tests")
+      .select("*")
       .eq("id", 1)
       .maybeSingle();
     if (error) throw error;
@@ -849,6 +856,30 @@ export async function loadAppData() {
   } catch (e) {
     console.error("Load app data failed:", e);
     return empty;
+  }
+}
+
+// Generic safe read-modify-write for a single app_data jsonb column: always
+// re-fetches that column's CURRENT value from Supabase immediately before
+// writing, instead of trusting a possibly-stale local React state copy.
+// This is what closes off the bug class that made community links and
+// reviews look "deleted" — a stale/empty local copy (e.g. from a failed
+// read) silently overwriting real, already-saved server data the moment
+// the admin added or removed one item. `mutate(current)` returns the new
+// value to save. Returns the new value on success, or null on failure
+// (nothing saved, so the caller can alert instead of assuming success).
+async function mergeAppDataField(column, emptyValue, mutate) {
+  try {
+    const { data, error } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
+    if (error) throw error;
+    const current = (data && data[column]) || emptyValue;
+    const next = mutate(current);
+    const { error: updateError } = await supabase.from("app_data").update({ [column]: next }).eq("id", 1).select("id");
+    if (updateError) throw updateError;
+    return next;
+  } catch (e) {
+    console.error(`Safe update of app_data.${column} failed:`, e);
+    return null;
   }
 }
 export async function saveDailyReminder(dailyReminder) {
@@ -8706,28 +8737,39 @@ export default function App() {
   // ---- Reviews: any signed-in student can add one; visible to students of
   // the same course, and to admin (across all courses, for moderation) ----
   const addReview = async (review) => {
-    const next = [...reviews, { ...review, id: uid(), programs: userCourse ? [userCourse] : [], createdAt: new Date().toISOString(), likes: [], adminReply: null }];
+    const next = await mergeAppDataField("reviews", [], (current) => [
+      ...current,
+      { ...review, id: uid(), programs: userCourse ? [userCourse] : [], createdAt: new Date().toISOString(), likes: [], adminReply: null },
+    ]);
+    if (next === null) {
+      alert("Could not save your review — check your internet connection and try again.");
+      return;
+    }
     setReviews(next);
-    await saveReviews(next);
   };
   const likeReview = async (reviewId) => {
     const who = user?.user_metadata?.name || user?.email || "Anonymous";
-    const next = reviews.map((r) => {
-      if (r.id !== reviewId) return r;
-      const likes = r.likes || [];
-      const already = likes.includes(who);
-      return { ...r, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
-    });
+    const next = await mergeAppDataField("reviews", [], (current) =>
+      current.map((r) => {
+        if (r.id !== reviewId) return r;
+        const likes = r.likes || [];
+        const already = likes.includes(who);
+        return { ...r, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
+      })
+    );
+    if (next === null) return; // low-stakes action — fail quietly rather than alert
     setReviews(next);
-    await saveReviews(next);
   };
   // Admin-only: reply to a student's review.
   const replyToReview = async (reviewId, text) => {
-    const next = reviews.map((r) =>
-      r.id === reviewId ? { ...r, adminReply: { text, createdAt: new Date().toISOString() } } : r
+    const next = await mergeAppDataField("reviews", [], (current) =>
+      current.map((r) => (r.id === reviewId ? { ...r, adminReply: { text, createdAt: new Date().toISOString() } } : r))
     );
+    if (next === null) {
+      alert("Could not save your reply — check your internet connection and try again.");
+      return;
+    }
     setReviews(next);
-    await saveReviews(next);
   };
   // Admin-only: toggle whether a review is visible to a given course (or to
   // "All" courses at once). A review can be assigned to any combination of
@@ -8736,26 +8778,34 @@ export default function App() {
   // in front of the right students. Picking "All" clears individual course
   // picks (and vice versa), since they'd be redundant together.
   const toggleReviewProgram = async (reviewId, courseKey) => {
-    const next = reviews.map((r) => {
-      if (r.id !== reviewId) return r;
-      const current = r.programs || (r.program ? [r.program] : []);
-      let updated;
-      if (courseKey === "All") {
-        updated = current.includes("All") ? [] : ["All"];
-      } else {
-        const withoutAll = current.filter((c) => c !== "All");
-        updated = withoutAll.includes(courseKey) ? withoutAll.filter((c) => c !== courseKey) : [...withoutAll, courseKey];
-      }
-      return { ...r, programs: updated, program: undefined };
-    });
+    const next = await mergeAppDataField("reviews", [], (current) =>
+      current.map((r) => {
+        if (r.id !== reviewId) return r;
+        const curPrograms = r.programs || (r.program ? [r.program] : []);
+        let updated;
+        if (courseKey === "All") {
+          updated = curPrograms.includes("All") ? [] : ["All"];
+        } else {
+          const withoutAll = curPrograms.filter((c) => c !== "All");
+          updated = withoutAll.includes(courseKey) ? withoutAll.filter((c) => c !== courseKey) : [...withoutAll, courseKey];
+        }
+        return { ...r, programs: updated, program: undefined };
+      })
+    );
+    if (next === null) {
+      alert("Could not save this change — check your internet connection and try again.");
+      return;
+    }
     setReviews(next);
-    await saveReviews(next);
   };
   // Admin-only: delete a review entirely.
   const deleteReview = async (reviewId) => {
-    const next = reviews.filter((r) => r.id !== reviewId);
+    const next = await mergeAppDataField("reviews", [], (current) => current.filter((r) => r.id !== reviewId));
+    if (next === null) {
+      alert("Could not delete this review — check your internet connection and try again.");
+      return;
+    }
     setReviews(next);
-    await saveReviews(next);
   };
 
   // ---- Explanation feedback: 👍/👎 tally per question ----
@@ -8934,14 +8984,20 @@ export default function App() {
 
   // ---- Contact items (WhatsApp / links): admin-only add/remove ----
   const addContactItem = async (item) => {
-    const next = [...contactItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    const next = await mergeAppDataField("contact_items", [], (current) => [...current, { ...item, id: uid(), createdAt: new Date().toISOString() }]);
+    if (next === null) {
+      alert("Could not save this link — check your internet connection and try again. Nothing was saved.");
+      return;
+    }
     setContactItems(next);
-    await saveContactItems(next);
   };
   const removeContactItem = async (id) => {
-    const next = contactItems.filter((i) => i.id !== id);
+    const next = await mergeAppDataField("contact_items", [], (current) => current.filter((i) => i.id !== id));
+    if (next === null) {
+      alert("Could not remove this link — check your internet connection and try again.");
+      return;
+    }
     setContactItems(next);
-    await saveContactItems(next);
   };
 
   // ---- Social link cards (WhatsApp Group / Instagram / Facebook / TikTok): admin-only update ----
