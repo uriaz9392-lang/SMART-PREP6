@@ -874,8 +874,18 @@ async function mergeAppDataField(column, emptyValue, mutate) {
     if (error) throw error;
     const current = (data && data[column]) || emptyValue;
     const next = mutate(current);
-    const { error: updateError } = await supabase.from("app_data").update({ [column]: next }).eq("id", 1).select("id");
+    const { error: updateError } = await supabase.from("app_data").update({ [column]: next }).eq("id", 1);
     if (updateError) throw updateError;
+    // Verify the write actually landed by reading it straight back, instead
+    // of trusting a successful-looking response — a write that "succeeds"
+    // but silently doesn't stick (e.g. an RLS policy quietly rejecting it)
+    // is exactly what made saves look fine once, then disappear.
+    const { data: verify, error: verifyError } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
+    if (verifyError) throw verifyError;
+    const persisted = (verify && verify[column]) || emptyValue;
+    if (JSON.stringify(persisted) !== JSON.stringify(next)) {
+      throw new Error(`Update reported success but did not persist — check Row Level Security policies allow UPDATE on app_data.${column} for this user.`);
+    }
     return next;
   } catch (e) {
     console.error(`Safe update of app_data.${column} failed:`, e);
@@ -6103,6 +6113,46 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const [newPass, setNewPass] = useState("");
   const [passMsg, setPassMsg] = useState("");
 
+  // ---- Local-cache bank recovery ----
+  // Every device keeps its own IndexedDB copy of the bank purely as a
+  // bandwidth-saving cache (see loadLocalBankCache/saveLocalBankCache) — and
+  // that cache is NEVER overwritten with an empty array (saveLocalBankCache
+  // refuses to save one). So if the live bank in Supabase is ever wiped or
+  // shrinks drastically, whichever device most recently had the real, full
+  // bank still has it sitting in its local cache, untouched. This checks for
+  // that on every Admin Panel open and offers a one-tap restore if found.
+  const [cacheRecovery, setCacheRecovery] = useState(null); // { cached, count } | null
+  const [recovering, setRecovering] = useState(false);
+  useEffect(() => {
+    (async () => {
+      const cached = await loadLocalBankCache();
+      if (cached && cached.length > bank.length + 50) {
+        setCacheRecovery({ cached, count: cached.length });
+      }
+    })();
+  }, []);
+  const restoreFromCache = async () => {
+    if (!cacheRecovery || recovering) return;
+    const typed = window.prompt(
+      `This will replace the live database's ${bank.length} question(s) with the ${cacheRecovery.count} question(s) found in this device's local cache. ` +
+      `To confirm, type the exact number ${cacheRecovery.count} below:`
+    );
+    if (typed === null || typed.trim() !== String(cacheRecovery.count)) {
+      alert("Restore cancelled — the number didn't match, nothing was changed.");
+      return;
+    }
+    setRecovering(true);
+    const ok = await saveBank(cacheRecovery.cached);
+    setRecovering(false);
+    if (ok !== true) {
+      alert("Could not restore — check your internet connection and try again. Nothing was changed yet, so it's safe to retry.");
+      return;
+    }
+    setBank(cacheRecovery.cached);
+    setCacheRecovery(null);
+    alert(`Restored ${cacheRecovery.count} questions to the live database.`);
+  };
+
   const [noteForm, setNoteForm] = useState(EMPTY_NOTE_FORM);
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [notePdfUploading, setNotePdfUploading] = useState(false);
@@ -6844,6 +6894,36 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           ))}
         </div>
       </header>
+
+      {cacheRecovery && (
+        <div className="max-w-5xl mx-auto px-6 pt-6">
+          <div className="p-4 flex items-center justify-between gap-4 flex-wrap" style={{ background: T.roseSoft, border: `1px solid ${T.rose}` }}>
+            <div>
+              <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700, color: T.rose }} className="mb-1">
+                Possible bank recovery found
+              </div>
+              <div className="text-sm" style={{ color: T.ink }}>
+                This device has a locally cached copy of the question bank with <strong>{cacheRecovery.count}</strong> questions,
+                but the live database currently only has <strong>{bank.length}</strong>. If the live bank was recently wiped by
+                mistake, this cache is very likely your real data — restoring it will replace what's live now with this cached copy.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={restoreFromCache}
+                disabled={recovering}
+                className="px-4 py-2 text-sm disabled:opacity-50"
+                style={{ background: T.rose, color: "#fff" }}
+              >
+                {recovering ? "Restoring…" : `Restore ${cacheRecovery.count} questions`}
+              </button>
+              <button onClick={() => setCacheRecovery(null)} className="px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, color: T.inkSoft }}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-5xl mx-auto px-6 py-8">
         {tab === "list" && (
@@ -8400,10 +8480,21 @@ export default function App() {
             console.error("Could not load the question bank (no internet / Supabase error), and no local cache exists yet on this device.");
           }
         } else {
-          // loaded === null: Supabase was reached fine and confirmed there is genuinely
-          // no bank yet — this only happens once, on a brand new project.
-          b = SEED_MCQS;
-          await saveBank(b, { force: true });
+          // loaded === null: Supabase was reached and returned no bank data.
+          // IMPORTANT: this used to be treated as "confirmed brand new project"
+          // and would auto-seed a small starter set, force-overwriting whatever
+          // was actually there — with zero protection against wiping a real,
+          // large bank if this was ever wrong (e.g. a transient read returning
+          // no row). That is almost certainly what caused a real bank to be
+          // replaced with just the seed questions. Auto-seeding an unattended
+          // write like that is never safe again: fall back to the local cache
+          // exactly like a failed load, and never touch Supabase here. Seeding
+          // a genuinely new project now has to be a deliberate admin action.
+          const cached = cachedBank;
+          b = cached || [];
+          if (!cached) {
+            console.error("Supabase returned no bank data, and no local cache exists on this device. NOT auto-seeding — if this is a genuinely new project, an admin needs to add the first questions manually.");
+          }
         }
       }
       setBank(b);
@@ -8876,6 +8967,23 @@ export default function App() {
   const deleteMcqsByIds = async (ids) => {
     if (!ids || ids.length === 0) return false;
     if (!adminUnlocked) return false; // defensive: never allow this from a non-admin session
+    // Hard safety net: this path calls a Postgres RPC directly and was NOT
+    // covered by saveBank()'s "don't shrink by more than half" protection —
+    // a button anywhere in the folder hierarchy (including whole-program
+    // scope) could wipe a huge share of the bank in one tap with only a
+    // plain OK/Cancel confirm standing in the way. Require typing the count
+    // for anything this large, the same way a destructive cloud console
+    // forces you to type a resource's name before deleting it.
+    if (bank.length > 0 && ids.length > 200 && ids.length > bank.length * 0.2) {
+      const typed = window.prompt(
+        `You're about to delete ${ids.length} of ${bank.length} questions in the entire bank — that's a huge chunk. ` +
+        `This cannot be undone. To confirm, type the exact number ${ids.length} below:`
+      );
+      if (typed === null || typed.trim() !== String(ids.length)) {
+        alert("Delete cancelled — the number didn't match, so nothing was deleted.");
+        return false;
+      }
+    }
     const prev = bank;
     const idSet = new Set(ids);
     const next = bank.filter((q) => !idSet.has(q.id));
@@ -9056,7 +9164,7 @@ export default function App() {
   const updateSocialLink = async (label, url) => {
     const next = await mergeAppDataField("social_links", {}, (current) => ({ ...current, [label]: url }));
     if (next === null) {
-      alert("Could not save this link — check your internet connection and try again. Nothing was saved.");
+      alert("Could not save this link — the save did not go through. Check your internet connection and try again. If this keeps happening, the app_data table's Row Level Security policy may not allow this account to update it — see the browser console for the exact error.");
       return;
     }
     setSocialLinks(next);
