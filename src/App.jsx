@@ -8361,8 +8361,79 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   );
 }
 
+// ---------- Error Boundary ----------
+// Without this, ANY unexpected error anywhere in the render tree (a bad
+// question record, a null reference, anything unforeseen) would unmount the
+// whole app and leave the person looking at a blank white screen with no
+// way forward except guessing to reload. This catches that instead and
+// shows a plain, friendly recovery screen with a reload button.
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error("Unhandled error caught by AppErrorBoundary:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center px-6" style={{ background: "#0B1E3D", color: "#fff" }}>
+          <div className="max-w-sm text-center">
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-3">
+              Something went wrong
+            </h1>
+            <p className="text-sm mb-6" style={{ color: "#B9C4DE" }}>
+              Sorry about that — an unexpected error occurred. Your saved progress is safe. Reloading usually fixes this.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-6 py-3 text-sm"
+              style={{ background: "#fff", color: "#0B1E3D" }}
+            >
+              Reload app
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ---------- Offline banner ----------
+// A thin, non-blocking bar shown across the top whenever the device has no
+// network connection, so actions that quietly fail (saving progress,
+// loading a new screen) at least come with an obvious, friendly explanation
+// instead of looking broken.
+function OfflineBanner() {
+  const [isOffline, setIsOffline] = useState(typeof navigator !== "undefined" ? !navigator.onLine : false);
+  useEffect(() => {
+    const goOnline = () => setIsOffline(false);
+    const goOffline = () => setIsOffline(true);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+  if (!isOffline) return null;
+  return (
+    <div
+      className="fixed top-0 left-0 right-0 z-50 text-center text-xs py-2"
+      style={{ background: "#B45309", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+    >
+      No internet connection — some things may not load or save until you're back online.
+    </div>
+  );
+}
+
 // ---------- Root ----------
-export default function App() {
+function AppInner() {
   const [loading, setLoading] = useState(true);
   const [bank, setBank] = useState([]);
   const [notesBank, setNotesBank] = useState([]);
@@ -9636,4 +9707,17 @@ export default function App() {
     );
   }
   return null;
+}
+
+// Wraps the real app with a crash-safety net and an offline indicator —
+// neither changes any existing behavior, they only catch failure cases that
+// previously had no handling at all (a blank white screen on an unexpected
+// error, and no feedback at all when the device loses its connection).
+export default function App() {
+  return (
+    <AppErrorBoundary>
+      <OfflineBanner />
+      <AppInner />
+    </AppErrorBoundary>
+  );
 }
