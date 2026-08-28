@@ -6381,11 +6381,18 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     })();
   }, []);
   const saveExamDate = async (programKey, dateStr) => {
-    const next = { ...examDates, [programKey]: dateStr || undefined };
-    if (!dateStr) delete next[programKey];
+    const next = await mergeAppDataField("exam_dates", {}, (current) => {
+      const merged = { ...current, [programKey]: dateStr || undefined };
+      if (!dateStr) delete merged[programKey];
+      return merged;
+    });
+    if (next === null) {
+      setExamDatesMsg("Could not save — check your internet connection.");
+      setTimeout(() => setExamDatesMsg(""), 2000);
+      return;
+    }
     setExamDates(next);
-    const ok = await saveExamDates(next);
-    setExamDatesMsg(ok ? "Saved." : "Could not save — check your internet connection.");
+    setExamDatesMsg("Saved.");
     setTimeout(() => setExamDatesMsg(""), 2000);
   };
 
@@ -8810,10 +8817,12 @@ export default function App() {
 
   // ---- Explanation feedback: 👍/👎 tally per question ----
   const voteExplanation = async (questionId, dir) => {
-    const current = explanationFeedback[questionId] || { up: 0, down: 0 };
-    const next = { ...explanationFeedback, [questionId]: { ...current, [dir]: (current[dir] || 0) + 1 } };
+    const next = await mergeAppDataField("explanation_feedback", {}, (current) => {
+      const cur = current[questionId] || { up: 0, down: 0 };
+      return { ...current, [questionId]: { ...cur, [dir]: (cur[dir] || 0) + 1 } };
+    });
+    if (next === null) return; // low-stakes vote — fail quietly rather than alert
     setExplanationFeedback(next);
-    await saveExplanationFeedback(next);
   };
 
   // ---- Report a question: flag it for admin review ----
@@ -8830,19 +8839,30 @@ export default function App() {
       createdAt: new Date().toISOString(),
       resolved: false,
     };
-    const next = [...questionReports, entry];
+    const next = await mergeAppDataField("question_reports", [], (current) => [...current, entry]);
+    if (next === null) {
+      alert("Could not submit this report — check your internet connection and try again.");
+      return;
+    }
     setQuestionReports(next);
-    await saveQuestionReports(next);
   };
   const resolveReport = async (reportId) => {
-    const next = questionReports.map((r) => (r.id === reportId ? { ...r, resolved: true } : r));
+    const next = await mergeAppDataField("question_reports", [], (current) =>
+      current.map((r) => (r.id === reportId ? { ...r, resolved: true } : r))
+    );
+    if (next === null) {
+      alert("Could not update this report — check your internet connection and try again.");
+      return;
+    }
     setQuestionReports(next);
-    await saveQuestionReports(next);
   };
   const deleteReport = async (reportId) => {
-    const next = questionReports.filter((r) => r.id !== reportId);
+    const next = await mergeAppDataField("question_reports", [], (current) => current.filter((r) => r.id !== reportId));
+    if (next === null) {
+      alert("Could not delete this report — check your internet connection and try again.");
+      return;
+    }
     setQuestionReports(next);
-    await saveQuestionReports(next);
   };
 
   // ---- Delete MCQs matching a folder/topic scope (ADMIN ONLY) ----
@@ -8890,10 +8910,15 @@ export default function App() {
       likes: [],
       adminReply: null,
     };
-    const nextThread = [...(discussions[topicKey] || []), entry];
-    const next = { ...discussions, [topicKey]: nextThread };
+    const next = await mergeAppDataField("discussions", {}, (current) => ({
+      ...current,
+      [topicKey]: [...(current[topicKey] || []), entry],
+    }));
+    if (next === null) {
+      alert("Could not post your comment — check your internet connection and try again.");
+      return;
+    }
     setDiscussions(next);
-    await saveDiscussions(next);
   };
 
   // Toggles a like from the current student on one comment. Uses the student's
@@ -8901,59 +8926,81 @@ export default function App() {
   // posting comments) so a person can't stack up multiple likes on one comment.
   const likeDiscussion = async (topicKey, commentId) => {
     const who = user?.user_metadata?.name || user?.email || "Anonymous";
-    const nextThread = (discussions[topicKey] || []).map((c) => {
-      if (c.id !== commentId) return c;
-      const likes = c.likes || [];
-      const already = likes.includes(who);
-      return { ...c, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
-    });
-    const next = { ...discussions, [topicKey]: nextThread };
+    const next = await mergeAppDataField("discussions", {}, (current) => ({
+      ...current,
+      [topicKey]: (current[topicKey] || []).map((c) => {
+        if (c.id !== commentId) return c;
+        const likes = c.likes || [];
+        const already = likes.includes(who);
+        return { ...c, likes: already ? likes.filter((n) => n !== who) : [...likes, who] };
+      }),
+    }));
+    if (next === null) return; // low-stakes action — fail quietly rather than alert
     setDiscussions(next);
-    await saveDiscussions(next);
   };
 
   // Admin-only: reply to a student's comment/doubt.
   const replyToDiscussion = async (topicKey, commentId, replyText) => {
-    const nextThread = (discussions[topicKey] || []).map((c) =>
-      c.id === commentId
-        ? { ...c, adminReply: { text: replyText, createdAt: new Date().toISOString() } }
-        : c
-    );
-    const next = { ...discussions, [topicKey]: nextThread };
+    const next = await mergeAppDataField("discussions", {}, (current) => ({
+      ...current,
+      [topicKey]: (current[topicKey] || []).map((c) =>
+        c.id === commentId ? { ...c, adminReply: { text: replyText, createdAt: new Date().toISOString() } } : c
+      ),
+    }));
+    if (next === null) {
+      alert("Could not save your reply — check your internet connection and try again.");
+      return;
+    }
     setDiscussions(next);
-    await saveDiscussions(next);
   };
 
   // Admin-only: delete a comment entirely (and its reply/likes with it).
   const deleteDiscussion = async (topicKey, commentId) => {
-    const nextThread = (discussions[topicKey] || []).filter((c) => c.id !== commentId);
-    const next = { ...discussions, [topicKey]: nextThread };
+    const next = await mergeAppDataField("discussions", {}, (current) => ({
+      ...current,
+      [topicKey]: (current[topicKey] || []).filter((c) => c.id !== commentId),
+    }));
+    if (next === null) {
+      alert("Could not delete this comment — check your internet connection and try again.");
+      return;
+    }
     setDiscussions(next);
-    await saveDiscussions(next);
   };
 
   // ---- Syllabus items: admin-only add/remove ----
   const addSyllabusItem = async (item) => {
-    const next = [...syllabusItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    const next = await mergeAppDataField("syllabus", [], (current) => [...current, { ...item, id: uid(), createdAt: new Date().toISOString() }]);
+    if (next === null) {
+      alert("Could not save this item — check your internet connection and try again.");
+      return;
+    }
     setSyllabusItems(next);
-    await saveSyllabusItems(next);
   };
   const removeSyllabusItem = async (id) => {
-    const next = syllabusItems.filter((i) => i.id !== id);
+    const next = await mergeAppDataField("syllabus", [], (current) => current.filter((i) => i.id !== id));
+    if (next === null) {
+      alert("Could not delete this item — check your internet connection and try again.");
+      return;
+    }
     setSyllabusItems(next);
-    await saveSyllabusItems(next);
   };
 
   // ---- Guideline items: admin-only add/remove ----
   const addGuidelineItem = async (item) => {
-    const next = [...guidelineItems, { ...item, id: uid(), createdAt: new Date().toISOString() }];
+    const next = await mergeAppDataField("guidelines", [], (current) => [...current, { ...item, id: uid(), createdAt: new Date().toISOString() }]);
+    if (next === null) {
+      alert("Could not save this item — check your internet connection and try again.");
+      return;
+    }
     setGuidelineItems(next);
-    await saveGuidelineItems(next);
   };
   const removeGuidelineItem = async (id) => {
-    const next = guidelineItems.filter((i) => i.id !== id);
+    const next = await mergeAppDataField("guidelines", [], (current) => current.filter((i) => i.id !== id));
+    if (next === null) {
+      alert("Could not delete this item — check your internet connection and try again.");
+      return;
+    }
     setGuidelineItems(next);
-    await saveGuidelineItems(next);
   };
 
   // ---- FLP tests: admin adds/deletes fixed papers. These always re-fetch the
@@ -9000,11 +9047,19 @@ export default function App() {
     setContactItems(next);
   };
 
-  // ---- Social link cards (WhatsApp Group / Instagram / Facebook / TikTok): admin-only update ----
+  // ---- Social link cards (WhatsApp Group / Instagram / Facebook / TikTok,
+  // and per-course "Community:<course>" links set from Admin → Community
+  // Links): admin-only update. Uses the same safe re-fetch-then-merge
+  // pattern as Contact Items/Reviews — this was the actual data store
+  // behind "Community Links keep getting deleted", which a previous fix
+  // missed (it's stored separately from contact_items).
   const updateSocialLink = async (label, url) => {
-    const next = { ...socialLinks, [label]: url };
+    const next = await mergeAppDataField("social_links", {}, (current) => ({ ...current, [label]: url }));
+    if (next === null) {
+      alert("Could not save this link — check your internet connection and try again. Nothing was saved.");
+      return;
+    }
     setSocialLinks(next);
-    await saveSocialLinksMap(next);
   };
 
   // ---- Push notifications: admin broadcast + daily reminder settings ----
@@ -9030,7 +9085,8 @@ export default function App() {
   // ---- Quick "add note" from inside the Notes tab (admin only) ----
   const quickAddNote = async (programKey, subjectName, title, content, type = "text") => {
     const prev = notesBank;
-    const next = [...notesBank, { id: uid(), program: programKey, subject: subjectName, title, type, content }];
+    const fresh = (await loadNotes()) || notesBank;
+    const next = [...fresh, { id: uid(), program: programKey, subject: subjectName, title, type, content }];
     setNotesBank(next);
     const ok = await saveNotes(next);
     if (!ok) {
