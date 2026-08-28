@@ -1391,12 +1391,19 @@ const PAST_PAPER_FOLDERS = {
     { name: "KMU CAT 2026", subfolders: ["KMU CAT 2026 First Test", "KMU CAT 2026 2nd Test", "KMU CAT 2026 3rd Test"] },
   ],
   MBBS: [
-    "KMU Block A 2020", "KMU Block A 2021", "KMU Block A 2022", "KMU Block A 2023", "KMU Block A 2024",
-    "KMU Block B 2020", "KMU Block B 2021", "KMU Block B 2022", "KMU Block B 2023", "KMU Block B 2024",
-    "KMU Block C 2020", "KMU Block C 2021", "KMU Block C 2022", "KMU Block C 2023", "KMU Block C 2024",
-    "KMU Block D 2020", "KMU Block D 2021", "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024",
-    "KMU Block E 2020", "KMU Block E 2021", "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024",
-    "KMU Block F 2020", "KMU Block F 2021", "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024",
+    { name: "KMU Block A", subfolders: ["KMU Block A 2020", "KMU Block A 2021", "KMU Block A 2022", "KMU Block A 2023", "KMU Block A 2024"] },
+    { name: "KMU Block B", subfolders: ["KMU Block B 2020", "KMU Block B 2021", "KMU Block B 2022", "KMU Block B 2023", "KMU Block B 2024"] },
+    { name: "KMU Block C", subfolders: ["KMU Block C 2020", "KMU Block C 2021", "KMU Block C 2022", "KMU Block C 2023", "KMU Block C 2024"] },
+    { name: "KMU Block D", subfolders: ["KMU Block D 2020", "KMU Block D 2021", "KMU Block D 2022", "KMU Block D 2023", "KMU Block D 2024"] },
+    { name: "KMU Block E", subfolders: ["KMU Block E 2020", "KMU Block E 2021", "KMU Block E 2022", "KMU Block E 2023", "KMU Block E 2024"] },
+    { name: "KMU Block F", subfolders: ["KMU Block F 2020", "KMU Block F 2021", "KMU Block F 2022", "KMU Block F 2023", "KMU Block F 2024"] },
+    {
+      name: "Internal Blocks Past Papers",
+      subfolders: [
+        "Internal Block A", "Internal Block B", "Internal Block C",
+        "Internal Block D", "Internal Block E", "Internal Block F",
+      ],
+    },
   ],
   BSN: [], // to be provided later
 };
@@ -4516,9 +4523,13 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
   const allFolders = PAST_PAPER_FOLDERS[program] || [];
   // MBBS students only see past-paper folders for their own year's blocks
   // (e.g. Block A/B/C for 1st Year) — same restriction as topic browsing.
+  // "Internal Blocks Past Papers" is a container covering every block, so it
+  // always stays visible here — its own subfolders get filtered instead,
+  // inside PastPaperSubfoldersPage.
   const folders = (restrictedMbbsBlocks && restrictedMbbsBlocks.length > 0)
     ? allFolders.filter((f) => {
         const name = typeof f === "string" ? f : f.name;
+        if (name === "Internal Blocks Past Papers") return true;
         return restrictedMbbsBlocks.some((blk) => name.includes(blk));
       })
     : allFolders;
@@ -4637,8 +4648,15 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
 
 // Lists the test-level subfolders inside a single past-paper year (e.g. all the
 // individual tests inside "KMU CAT 2025").
-function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, onHome, isAdmin, onDeleteMcqs }) {
-  const subfolders = parent?.subfolders || [];
+function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, onHome, isAdmin, onDeleteMcqs, restrictedMbbsBlocks }) {
+  const allSubfolders = parent?.subfolders || [];
+  // "Internal Blocks Past Papers" covers every block — restrict its children
+  // to the student's own year's blocks, same as everywhere else. Other
+  // parents (e.g. "KMU Block A") are already fully within the student's
+  // allowed blocks by the time they're opened, so nothing to filter there.
+  const subfolders = (restrictedMbbsBlocks && restrictedMbbsBlocks.length > 0 && parent?.name === "Internal Blocks Past Papers")
+    ? allSubfolders.filter((f) => restrictedMbbsBlocks.some((blk) => f.includes(blk)))
+    : allSubfolders;
   const idsByName = useMemo(() => {
     const c = {};
     subfolders.forEach((f) => {
@@ -8381,7 +8399,19 @@ export default function App() {
       }
     };
     const interval = setInterval(tick, 60000);
-    return () => clearInterval(interval);
+    // Also re-ping the moment the tab/app comes back to the foreground,
+    // instead of waiting for the next scheduled 60s tick. A session that
+    // spends most of its time backgrounded (phone locked, app switched
+    // away) was going long stretches without a fresh ping, undercounting
+    // "Active today" even for people genuinely using the app that day.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") pingUsage(user.id, name, 1);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [user]);
 
   useEffect(() => {
@@ -9257,6 +9287,7 @@ export default function App() {
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
+        restrictedMbbsBlocks={program === "MBBS" ? userMbbsBlocks : null}
       />
     );
   }
