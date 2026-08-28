@@ -662,7 +662,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history, course")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history, course, mbbs_year")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -680,6 +680,7 @@ export async function loadUserStats(userId) {
       flpUsed: data.flp_used || {},
       history: data.history || [],
       course: data.course || null,
+      mbbsYear: data.mbbs_year || null,
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
@@ -703,6 +704,7 @@ export async function saveUserStats(userId, stats) {
       flp_used: stats.flpUsed || {},
       history: stats.history || [],
       course: stats.course || null,
+      mbbs_year: stats.mbbsYear || null,
     });
     if (error) throw error;
   } catch (e) {
@@ -711,17 +713,35 @@ export async function saveUserStats(userId, stats) {
 }
 
 // ---- Leaderboard (reads every student's aggregate stats) ----
-// Reads from the Cloudflare Worker's cached copy (refreshed every 5 minutes
-// by a Cron Trigger there) instead of querying Supabase directly on every
-// app open — this is what keeps leaderboard reads free/cheap. Saving a
-// student's own stats is completely unchanged and still goes to Supabase
-// directly (see saveUserStats), so progress is never delayed or at risk.
-// NOTE: per-course filtering is done on the client (in LeaderboardView) by
-// matching each row's `course` field — the Worker's own cached payload needs
-// to include that field too (it's a separate file, not this one) for rows
-// coming from the CDN path below to be filterable; the Supabase fallback
-// path already selects it.
-export async function loadLeaderboard(limit = 50) {
+// Two modes:
+//  - Unscoped (no course given): reads the Cloudflare Worker's cached copy
+//    first for a cheap global "top student" preview (e.g. Home's Quick
+//    Access card), falling back to Supabase if the Worker is down.
+//  - Scoped (course given, e.g. every real Leaderboard screen a student
+//    opens): always reads directly from Supabase with the filter applied
+//    server-side. The Worker's cached payload is a separate script this app
+//    doesn't control, so it can't be trusted to always have an accurate/
+//    up-to-date `course` (or the newer `mbbs_year`) on every cached row —
+//    querying Supabase directly guarantees correctness for course- and
+//    year-scoped boards (this is what fixed MBBS' board never matching).
+export async function loadLeaderboard(limit = 50, filter = null) {
+  if (filter && filter.course) {
+    try {
+      let q = supabase
+        .from("user_stats")
+        .select("name, total_attempted, total_correct, course, mbbs_year")
+        .eq("course", filter.course)
+        .order("total_correct", { ascending: false })
+        .limit(limit);
+      if (filter.mbbsYear) q = q.eq("mbbs_year", filter.mbbsYear);
+      const { data, error } = await q;
+      if (error) throw error;
+      return (data || []).filter((r) => r.name && r.name.trim());
+    } catch (e) {
+      console.error("Scoped leaderboard load failed:", e);
+      return [];
+    }
+  }
   try {
     const res = await fetch(`${CDN_BASE}/leaderboard`);
     if (!res.ok) throw new Error("CDN leaderboard fetch failed: " + res.status);
@@ -2841,26 +2861,24 @@ function NotificationsOverlay({ notifications, onClose }) {
 }
 
 // ---------- Leaderboard ----------
-function LeaderboardView({ onBack, currentUserName, userCourse }) {
+function LeaderboardView({ onBack, currentUserName, userCourse, userMbbsYear }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const data = await loadLeaderboard(50);
-      // Keep only rows for the student's own course. Rows saved before course
-      // tracking existed (or coming from the CDN cache before it's updated to
-      // include `course`) have no course field — those are kept visible too,
-      // rather than silently dropped, so old progress doesn't just disappear.
-      const filtered = userCourse ? data.filter((r) => !r.course || r.course === userCourse) : data;
-      setRows(filtered);
-      setError(filtered.length === 0);
+      // Course- (and for MBBS, year-) scoped boards always read straight from
+      // Supabase with the filter applied server-side — see loadLeaderboard.
+      const data = await loadLeaderboard(50, userCourse ? { course: userCourse, mbbsYear: userMbbsYear } : null);
+      setRows(data);
+      setError(data.length === 0);
       setLoading(false);
     })();
-  }, [userCourse]);
+  }, [userCourse, userMbbsYear]);
 
   const medalColor = (i) => (i === 0 ? "#D4AF37" : i === 1 ? "#B7C0C7" : i === 2 ? "#C9793C" : T.inkSoft);
+  const scopeLabel = userCourse ? `${userCourse}${userMbbsYear ? ` — ${MBBS_YEAR_LABELS[userMbbsYear] || userMbbsYear}` : ""}` : null;
 
   return (
     <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
@@ -2872,7 +2890,7 @@ function LeaderboardView({ onBack, currentUserName, userCourse }) {
         <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1 flex items-center gap-2">
           <Trophy size={22} style={{ color: T.amber }} /> Leaderboard
         </h1>
-        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers{userCourse ? ` among ${userCourse} students` : " across all students"}.</p>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Ranked by total correct answers{scopeLabel ? ` among ${scopeLabel} students` : " across all students"}.</p>
 
         {loading && <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>}
 
@@ -3257,14 +3275,16 @@ function Home({
   const communityLink = userCourse ? (socialLinks && socialLinks[`Community:${userCourse}`]) || "" : "";
 
   // Exam countdown for the student's own course (admin sets the date; hidden once it's passed).
-  const daysToExam = useMemo(() => {    const dateStr = userCourse ? examDates?.[userCourse] : null;
+  const daysToExam = useMemo(() => {
+    const examKey = userCourse === "MBBS" && userMbbsYear ? `MBBS|${userMbbsYear}` : userCourse;
+    const dateStr = examKey ? examDates?.[examKey] : null;
     if (!dateStr) return null;
     const examDay = new Date(dateStr + "T00:00:00");
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const diff = Math.ceil((examDay - today) / 86400000);
     return diff >= 0 ? diff : null;
-  }, [examDates, userCourse]);
+  }, [examDates, userCourse, userMbbsYear]);
 
   const [seenNotifCount, setSeenNotifCount] = useState(() => {
     try { return Number(localStorage.getItem("mdcat-notif-seen") || 0); } catch { return 0; }
@@ -3303,10 +3323,10 @@ function Home({
   const [topLeader, setTopLeader] = useState(null);
   useEffect(() => {
     (async () => {
-      const data = await loadLeaderboard(1);
+      const data = await loadLeaderboard(1, userCourse ? { course: userCourse, mbbsYear: userMbbsYear } : null);
       if (data && data[0]) setTopLeader(data[0]);
     })();
-  }, []);
+  }, [userCourse, userMbbsYear]);
   const topLeaderAccuracy =
     topLeader && topLeader.total_attempted > 0 ? Math.round((topLeader.total_correct / topLeader.total_attempted) * 100) : 0;
 
@@ -7580,19 +7600,24 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             </h2>
             <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
               Set the exam date for each program. Students only see a countdown for their
-              own course — clear the date to hide the countdown again.
+              own course — clear the date to hide the countdown again. MBBS has a separate
+              date for First Year and 2nd Year, since students only see their own year's date.
             </p>
             {examDatesLoading ? (
               <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>
             ) : (
               <div className="space-y-3">
-                {PROGRAMS.map((p) => (
-                  <div key={p.key} className="p-4 flex items-center justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
-                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</div>
+                {PROGRAMS.flatMap((p) =>
+                  p.key === "MBBS"
+                    ? Object.keys(MBBS_STRUCTURE).map((y) => ({ key: `MBBS|${y}`, label: MBBS_YEAR_LABELS[y] || `MBBS ${y}` }))
+                    : [{ key: p.key, label: p.label }]
+                ).map((row) => (
+                  <div key={row.key} className="p-4 flex items-center justify-between gap-4" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                    <div style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{row.label}</div>
                     <input
                       type="date"
-                      value={examDates[p.key] || ""}
-                      onChange={(e) => saveExamDate(p.key, e.target.value)}
+                      value={examDates[row.key] || ""}
+                      onChange={(e) => saveExamDate(row.key, e.target.value)}
                       className="px-3 py-2 text-sm"
                       style={{ border: `1px solid ${T.line}`, background: T.paper, color: T.ink, fontFamily: "'IBM Plex Mono', monospace" }}
                     />
@@ -8303,13 +8328,14 @@ export default function App() {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
         const displayCourse = user?.user_metadata?.course || null;
+        const displayMbbsYear = displayCourse === "MBBS" ? (user?.user_metadata?.mbbsYear || null) : null;
         setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
-        // Keep the leaderboard's `name` (and `course`) columns in sync immediately
-        // on login (not just after the next quiz), so students who already have
-        // stats but signed up before these existed still show up/get filtered
-        // correctly once they log back in.
-        if (displayName && (!st || st.name !== displayName || st.course !== displayCourse)) {
-          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName, course: displayCourse });
+        // Keep the leaderboard's `name` (and `course`/`mbbs_year`) columns in
+        // sync immediately on login (not just after the next quiz), so
+        // students who already have stats but signed up before these existed
+        // still show up/get filtered correctly once they log back in.
+        if (displayName && (!st || st.name !== displayName || st.course !== displayCourse || st.mbbsYear !== displayMbbsYear)) {
+          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName, course: displayCourse, mbbsYear: displayMbbsYear });
         }
       } else {
         setStats(emptyStats);
@@ -8586,7 +8612,7 @@ export default function App() {
   const toggleBookmark = async (qid) => {
     const current = stats?.bookmarks || [];
     const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
-    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "", course: user?.user_metadata?.course || stats?.course || null };
+    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "", course: user?.user_metadata?.course || stats?.course || null, mbbsYear: userMbbsYear || stats?.mbbsYear || null };
     setStats(nextStats);
     if (user) {
       await saveUserStats(user.id, nextStats);
@@ -8952,6 +8978,7 @@ export default function App() {
       flpUsed,
       history: trimmedHistory,
       course: user?.user_metadata?.course || stats?.course || null,
+      mbbsYear: userMbbsYear || stats?.mbbsYear || null,
     };
     const statsKey =
       quizMeta.mode !== "normal"
@@ -9066,7 +9093,7 @@ export default function App() {
     );
   }
   if (view === "leaderboard") {
-    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} userCourse={userCourse} />;
+    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} userCourse={userCourse} userMbbsYear={userMbbsYear} />;
   }
   if (view === "admin-gate") {
     return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={() => setView("home")} />;
@@ -9277,7 +9304,7 @@ export default function App() {
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
         onReportQuestion={reportQuestion}
-        hideScore={quizMeta.mode === "flp"}
+        hideScore={false}
       />
     );
   }
