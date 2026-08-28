@@ -5248,6 +5248,15 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   const [showExplain, setShowExplain] = useState({});
   const [secondsLeft, setSecondsLeft] = useState(timeLimit || 0);
   const [questionStartedAt, setQuestionStartedAt] = useState(Date.now());
+  // Guards against submitting more than once. Without this, the timer effect
+  // below could call finish() repeatedly once secondsLeft hit 0 — any parent
+  // re-render (notification polling, unrelated state elsewhere in the app,
+  // etc.) recreates the `finish` callback, which was in the effect's own
+  // dependency array, re-triggering it again and again while still on the
+  // results transition. Each extra call added the same questions to the
+  // student's totalAttempted a second (or hundredth) time — this is what
+  // produced impossible numbers like "43640 attempted" on the leaderboard.
+  const finishedRef = useRef(false);
   // Options are re-shuffled once whenever a fresh `questions` array arrives (i.e. once
   // per quiz), so the correct answer isn't always in the same A/B/C/D slot on repeats.
   const shuffledQuestions = useMemo(() => questions.map(shuffleQuestionOptions), [questions]);
@@ -5279,6 +5288,8 @@ function Quiz({ questions, subject, onFinish, onExit, onHome, timeLimit, bookmar
   const toggleExplain = () => setShowExplain((s) => ({ ...s, [idx]: !s[idx] }));
 
   const finish = useCallback(() => {
+    if (finishedRef.current) return; // already submitted — ignore any further calls
+    finishedRef.current = true;
     let correct = 0;
     shuffledQuestions.forEach((qq, i) => {
       if (answers[i] === qq.correct) correct++;
@@ -6123,12 +6134,17 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   // that on every Admin Panel open and offers a one-tap restore if found.
   const [cacheRecovery, setCacheRecovery] = useState(null); // { cached, count } | null
   const [recovering, setRecovering] = useState(false);
+  const [cacheCheckDone, setCacheCheckDone] = useState(false);
+  const [localCacheCount, setLocalCacheCount] = useState(null); // for the always-visible debug line below
   useEffect(() => {
     (async () => {
       const cached = await loadLocalBankCache();
+      console.log("[bank recovery check] local cache:", cached ? cached.length : "none found", "| live bank:", bank.length);
+      setLocalCacheCount(cached ? cached.length : 0);
       if (cached && cached.length > bank.length + 50) {
         setCacheRecovery({ cached, count: cached.length });
       }
+      setCacheCheckDone(true);
     })();
   }, []);
   const restoreFromCache = async () => {
@@ -6894,6 +6910,14 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
           ))}
         </div>
       </header>
+
+      {cacheCheckDone && !cacheRecovery && (
+        <div className="max-w-5xl mx-auto px-6 pt-4">
+          <div className="text-xs" style={{ color: T.inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>
+            Local cache check (this device): {localCacheCount === 0 ? "no cache found" : `${localCacheCount} questions cached`} · Live bank: {bank.length} questions
+          </div>
+        </div>
+      )}
 
       {cacheRecovery && (
         <div className="max-w-5xl mx-auto px-6 pt-6">
