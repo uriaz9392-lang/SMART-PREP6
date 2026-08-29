@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.smartprep.app",
+    "sha256_cert_fingerprints": ["A9:A7:61:9C:3B:3C:38:8C:32:95:91:A4:03:5B:A7:2B:32:07:14:F4:65:59:19:06:CF:80:03:30:06:57:32:15"]
+  }
+}]
