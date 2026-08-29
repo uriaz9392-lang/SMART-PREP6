@@ -1,3 +1,6 @@
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
+});
 // sw.js — place this file at the ROOT of what your site serves as static files
 // (same folder as index.html), so it ends up reachable at https://yourapp.com/sw.js
 // This is what lets a push notification arrive and show up even when the app
