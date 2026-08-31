@@ -658,6 +658,14 @@ export async function saveSocialLinksMap(social_links) {
 }
 
 // ---- Per-user stats (each student's own score, tied to their account) ----
+// Returns: the stats object on success, null when the query succeeded but
+// genuinely found no row yet (a brand-new student), or false when the fetch
+// itself failed (network blip, timeout, etc). Distinguishing null from false
+// matters a lot — treating a failed fetch the same as "new student" is what
+// used to cause a student's real progress to be silently wiped: a bootstrap
+// step used to auto-create/save empty stats whenever load returned anything
+// falsy, including on a transient error, permanently overwriting real data
+// with nothing. Callers must never write on `false`.
 export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
@@ -684,7 +692,7 @@ export async function loadUserStats(userId) {
     };
   } catch (e) {
     console.error("Load user stats failed:", e);
-    return null;
+    return false;
   }
 }
 
@@ -707,10 +715,34 @@ export async function saveUserStats(userId, stats) {
       mbbs_year: stats.mbbsYear || null,
     });
     if (error) throw error;
+    return true;
   } catch (e) {
     console.error("Save user stats failed:", e);
+    return false;
   }
 }
+
+const EMPTY_USER_STATS = {
+  totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [],
+  streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [], course: null, mbbsYear: null, phone: "",
+};
+
+// Always re-fetches this student's current stats fresh from Supabase before
+// saving a change, instead of trusting local React state as the base — a
+// long-open tab, a second device, or just a stale in-memory copy could
+// otherwise silently overwrite real progress (bookmarks, weak topics,
+// history) with older data. `compute(current)` returns the full next stats
+// object. Returns the new stats on success, or null on failure (nothing
+// saved, caller should alert rather than assume success).
+async function updateUserStatsSafely(userId, compute) {
+  const loaded = await loadUserStats(userId);
+  if (loaded === false) return null; // fetch failed — never save over unknown state
+  const current = loaded || EMPTY_USER_STATS;
+  const next = compute(current);
+  const ok = await saveUserStats(userId, next);
+  return ok ? next : null;
+}
+
 
 // ---- Leaderboard (reads every student's aggregate stats) ----
 // Two modes:
@@ -8610,19 +8642,31 @@ function AppInner() {
       setDiscussions(appData.discussions);
       setDailyReminder(appData.daily_reminder);
       setFlpTests(appData.flp_tests);
-      const emptyStats = { totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [] };
+      const emptyStats = EMPTY_USER_STATS;
       if (user) {
         const st = await loadUserStats(user.id);
         const displayName = user?.user_metadata?.name || "";
         const displayCourse = user?.user_metadata?.course || null;
         const displayMbbsYear = displayCourse === "MBBS" ? (user?.user_metadata?.mbbsYear || null) : null;
-        setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
-        // Keep the leaderboard's `name` (and `course`/`mbbs_year`) columns in
-        // sync immediately on login (not just after the next quiz), so
-        // students who already have stats but signed up before these existed
-        // still show up/get filtered correctly once they log back in.
-        if (displayName && (!st || st.name !== displayName || st.course !== displayCourse || st.mbbsYear !== displayMbbsYear)) {
-          saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName, course: displayCourse, mbbsYear: displayMbbsYear });
+        if (st === false) {
+          // Fetch failed (network blip, timeout, etc) — this used to be
+          // treated the same as "brand new student with no row yet", which
+          // then triggered a save of empty stats below, silently wiping any
+          // real progress this student already had. Never do that: just show
+          // an empty view for now without touching Supabase. Their real data
+          // is untouched and will load correctly on the next successful open.
+          setStats({ ...emptyStats, name: displayName });
+        } else {
+          setStats(st ? { ...emptyStats, ...st, name: displayName } : { ...emptyStats, name: displayName });
+          // Keep the leaderboard's `name` (and `course`/`mbbs_year`) columns in
+          // sync immediately on login (not just after the next quiz), so
+          // students who already have stats but signed up before these existed
+          // still show up/get filtered correctly once they log back in. Safe to
+          // do here since `st` is confirmed either real data or a genuinely new
+          // (null) row — never a failed fetch.
+          if (displayName && (!st || st.name !== displayName || st.course !== displayCourse || st.mbbsYear !== displayMbbsYear)) {
+            saveUserStats(user.id, { ...emptyStats, ...(st || {}), name: displayName, course: displayCourse, mbbsYear: displayMbbsYear });
+          }
         }
       } else {
         setStats(emptyStats);
@@ -8916,15 +8960,33 @@ function AppInner() {
   };
 
   const toggleBookmark = async (qid) => {
-    const current = stats?.bookmarks || [];
-    const next = current.includes(qid) ? current.filter((id) => id !== qid) : [...current, qid];
-    const nextStats = { ...stats, bookmarks: next, name: user?.user_metadata?.name || stats?.name || "", course: user?.user_metadata?.course || stats?.course || null, mbbsYear: userMbbsYear || stats?.mbbsYear || null };
-    setStats(nextStats);
-    if (user) {
-      await saveUserStats(user.id, nextStats);
-    } else {
+    if (!user) {
       alert("You're not logged in, so this bookmark wasn't saved. Please log in to keep your bookmarks.");
+      return;
     }
+    // Optimistic local update so the tap feels instant...
+    const optimisticCurrent = stats?.bookmarks || [];
+    const optimisticNext = optimisticCurrent.includes(qid) ? optimisticCurrent.filter((id) => id !== qid) : [...optimisticCurrent, qid];
+    setStats((s) => ({ ...s, bookmarks: optimisticNext }));
+    // ...but the actual save always re-fetches fresh stats first, so it can
+    // never overwrite real progress with a stale local copy.
+    const saved = await updateUserStatsSafely(user.id, (current) => {
+      const currentBookmarks = current.bookmarks || [];
+      const nextBookmarks = currentBookmarks.includes(qid) ? currentBookmarks.filter((id) => id !== qid) : [...currentBookmarks, qid];
+      return {
+        ...current,
+        bookmarks: nextBookmarks,
+        name: user?.user_metadata?.name || current.name || "",
+        course: user?.user_metadata?.course || current.course || null,
+        mbbsYear: userMbbsYear || current.mbbsYear || null,
+      };
+    });
+    if (saved === null) {
+      setStats((s) => ({ ...s, bookmarks: optimisticCurrent })); // revert
+      alert("Could not save this bookmark — check your internet connection and try again.");
+      return;
+    }
+    setStats(saved);
   };
 
   // ---- Reviews: any signed-in student can add one; visible to students of
@@ -9301,37 +9363,9 @@ function AppInner() {
   const finishQuiz = async (res) => {
     setResult(res);
 
-    const SLOW_THRESHOLD_SECONDS = 60;
-    const wrongSet = new Set(stats?.wrongIds || []);
-    const slowSet = new Set(stats?.slowIds || []);
-    res.questions.forEach((qq, i) => {
-      if (res.answers[i] === qq.correct) wrongSet.delete(qq.id);
-      else wrongSet.add(qq.id);
-
-      const elapsed = res.answerTimes ? res.answerTimes[i] : null;
-      if (elapsed !== null && elapsed !== undefined && elapsed > SLOW_THRESHOLD_SECONDS) {
-        slowSet.add(qq.id);
-      } else if (elapsed !== null && elapsed !== undefined) {
-        // Answered quickly this time — no longer flag it as "slow"
-        slowSet.delete(qq.id);
-      }
-    });
-
-    let streak = stats?.streak || 0;
-    let lastChallengeDate = stats?.lastChallengeDate || null;
-    if (quizMeta.mode === "daily") {
-      const today = todayStr();
-      if (lastChallengeDate !== today) {
-        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-        streak = lastChallengeDate === yesterday ? streak + 1 : 1;
-        lastChallengeDate = today;
-      }
-    }
-
     // FLP: papers are fixed now (same paper for everyone), so there's no more
     // "used questions" tracking needed. Instead, record this attempt so the
     // admin can see who took which paper and what they scored.
-    const flpUsed = stats?.flpUsed || {};
     if (quizMeta.mode === "flp" && quizMeta.flpTestId) {
       saveFLPAttempt({
         userId: user?.id,
@@ -9345,51 +9379,96 @@ function AppInner() {
       });
     }
 
-    // Progress trend: merge today's totals into a rolling daily history (kept to 30 days).
-    const today = todayStr();
-    const history = [...(stats?.history || [])];
-    const todayIdx = history.findIndex((h) => h.date === today);
-    if (todayIdx >= 0) {
-      history[todayIdx] = {
-        date: today,
-        attempted: history[todayIdx].attempted + res.questions.length,
-        correct: history[todayIdx].correct + res.correct,
-      };
-    } else {
-      history.push({ date: today, attempted: res.questions.length, correct: res.correct });
+    if (!user) {
+      alert("You're not logged in, so this result wasn't saved. Please log in to keep your progress and appear on the leaderboard.");
+      setView("results");
+      return;
     }
-    const trimmedHistory = history.slice(-30);
 
-    const next = {
-      totalAttempted: (stats?.totalAttempted || 0) + res.questions.length,
-      totalCorrect: (stats?.totalCorrect || 0) + res.correct,
-      bySubject: { ...(stats?.bySubject || {}) },
-      bookmarks: stats?.bookmarks || [],
-      wrongIds: Array.from(wrongSet),
-      slowIds: Array.from(slowSet),
-      streak,
-      lastChallengeDate,
-      name: user?.user_metadata?.name || stats?.name || "",
-      // Remembered so the "before you start" FLP prompt can pre-fill it next time.
-      phone: (quizMeta.mode === "flp" && flpAttemptDetails.phone) || stats?.phone || "",
-      flpUsed,
-      history: trimmedHistory,
-      course: user?.user_metadata?.course || stats?.course || null,
-      mbbsYear: userMbbsYear || stats?.mbbsYear || null,
-    };
+    const SLOW_THRESHOLD_SECONDS = 60;
     const statsKey =
       quizMeta.mode !== "normal"
         ? quizMeta.label
         : block ? `${year} | ${block} | ${subject}` : year ? `${year} - ${subject}` : topic ? `${subject} - ${topic}` : subject;
-    next.bySubject[statsKey] = {
-      attempted: (next.bySubject[statsKey]?.attempted || 0) + res.questions.length,
-      correct: (next.bySubject[statsKey]?.correct || 0) + res.correct,
+    const today = todayStr();
+
+    // Builds the full next stats object from whatever is CURRENTLY saved
+    // (re-fetched fresh — never from local React state, which could be
+    // stale if this tab's been open a while or another device has since
+    // saved something) — this is what stopped "Your Progress" and saved
+    // bookmarks/weak topics from randomly resetting: previously a stale
+    // local copy or a failed background fetch could silently overwrite
+    // real progress with less (or nothing).
+    const computeNext = (current) => {
+      const wrongSet = new Set(current.wrongIds || []);
+      const slowSet = new Set(current.slowIds || []);
+      res.questions.forEach((qq, i) => {
+        if (res.answers[i] === qq.correct) wrongSet.delete(qq.id);
+        else wrongSet.add(qq.id);
+
+        const elapsed = res.answerTimes ? res.answerTimes[i] : null;
+        if (elapsed !== null && elapsed !== undefined && elapsed > SLOW_THRESHOLD_SECONDS) {
+          slowSet.add(qq.id);
+        } else if (elapsed !== null && elapsed !== undefined) {
+          slowSet.delete(qq.id);
+        }
+      });
+
+      let streak = current.streak || 0;
+      let lastChallengeDate = current.lastChallengeDate || null;
+      if (quizMeta.mode === "daily") {
+        if (lastChallengeDate !== today) {
+          const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+          streak = lastChallengeDate === yesterday ? streak + 1 : 1;
+          lastChallengeDate = today;
+        }
+      }
+
+      const history = [...(current.history || [])];
+      const todayIdx = history.findIndex((h) => h.date === today);
+      if (todayIdx >= 0) {
+        history[todayIdx] = {
+          date: today,
+          attempted: history[todayIdx].attempted + res.questions.length,
+          correct: history[todayIdx].correct + res.correct,
+        };
+      } else {
+        history.push({ date: today, attempted: res.questions.length, correct: res.correct });
+      }
+      const trimmedHistory = history.slice(-30);
+
+      const next = {
+        totalAttempted: (current.totalAttempted || 0) + res.questions.length,
+        totalCorrect: (current.totalCorrect || 0) + res.correct,
+        bySubject: { ...(current.bySubject || {}) },
+        bookmarks: current.bookmarks || [],
+        wrongIds: Array.from(wrongSet),
+        slowIds: Array.from(slowSet),
+        streak,
+        lastChallengeDate,
+        name: user?.user_metadata?.name || current.name || "",
+        phone: (quizMeta.mode === "flp" && flpAttemptDetails.phone) || current.phone || "",
+        flpUsed: current.flpUsed || {},
+        history: trimmedHistory,
+        course: user?.user_metadata?.course || current.course || null,
+        mbbsYear: userMbbsYear || current.mbbsYear || null,
+      };
+      next.bySubject[statsKey] = {
+        attempted: (next.bySubject[statsKey]?.attempted || 0) + res.questions.length,
+        correct: (next.bySubject[statsKey]?.correct || 0) + res.correct,
+      };
+      return next;
     };
-    setStats(next);
-    if (user) {
-      await saveUserStats(user.id, next);
+
+    // Optimistic local update so Results/Progress feel instant...
+    setStats((s) => computeNext(s || EMPTY_USER_STATS));
+    // ...but the real save re-fetches fresh stats first (see computeNext's
+    // `current` param above), so it can never wipe real progress.
+    const saved = await updateUserStatsSafely(user.id, computeNext);
+    if (saved === null) {
+      alert("Could not save your result — check your internet connection and try again. Your local progress this session is still shown, but wasn't saved to your account yet.");
     } else {
-      alert("You're not logged in, so this result wasn't saved. Please log in to keep your progress and appear on the leaderboard.");
+      setStats(saved);
     }
     setView("results");
   };
