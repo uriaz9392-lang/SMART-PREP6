@@ -1534,6 +1534,18 @@ function pastPaperLeafNames(program) {
   );
 }
 
+// True if `source` matches a known Past Papers folder (or subfolder) name for
+// this program. Used instead of guessing from whether the source text contains
+// the word "past" — that guess silently failed for MBBS, whose folder names
+// (e.g. "KMU Block A 2020", "Internal Block A") never contain "past" at all,
+// so MBBS past-paper questions were undercounted / excluded from bulk-delete.
+function isPastPaperSource(program, source) {
+  if (!source) return false;
+  return (PAST_PAPER_FOLDERS[program] || []).some((f) =>
+    typeof f === "string" ? f === source : f.name === source || (f.subfolders || []).includes(source)
+  );
+}
+
 // ============================================================================
 // SHARE HELPERS — every chapter / topic / folder can be shared with a friend
 // via a link. Opening the link takes the friend straight to that same content
@@ -3512,7 +3524,7 @@ function Home({
 
   const pastPaperCounts = useMemo(() => {
     const c = {};
-    programs.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key && /past/i.test(q.source || "")).length));
+    programs.forEach((p) => (c[p.key] = bank.filter((q) => q.program === p.key && isPastPaperSource(p.key, q.source)).length));
     return c;
   }, [bank, programs]);
 
@@ -4692,7 +4704,7 @@ function PastPaperFoldersPage({ program, bank, onBack, onOpenFolder, onOpenSubfo
             {isAdmin && (
               <DeleteMcqsButton
                 label={`${progInfo ? progInfo.label : program} — Past Papers`}
-                ids={bank.filter((q) => q.program === program && /past/i.test(q.source || "")).map((q) => q.id)}
+                ids={bank.filter((q) => q.program === program && isPastPaperSource(program, q.source)).map((q) => q.id)}
                 onDelete={onDeleteMcqs}
               />
             )}
@@ -7165,12 +7177,17 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{form.block ? "Select subject…" : "Choose block first"}</option>
+                    {form.block && <option value={PAST_PAPERS_SUBJECT}>{PAST_PAPERS_SUBJECT} (mixed subjects)</option>}
                     {((MBBS_STRUCTURE[form.year] || {})[form.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  {mbbsAllLeaves(form.block, form.subject).length > 0 ? (
+                  {form.subject === PAST_PAPERS_SUBJECT ? (
+                    <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
+                      Auto-set to match Source above
+                    </div>
+                  ) : mbbsAllLeaves(form.block, form.subject).length > 0 ? (
                     <select
                       value={form.topic}
                       onChange={(e) => setForm({ ...form, topic: e.target.value })}
@@ -7385,12 +7402,17 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
                     style={{ border: `1px solid ${T.line}`, background: T.card }}
                   >
                     <option value="">{bulkForm.block ? "Select subject…" : "Choose block first"}</option>
+                    {bulkForm.block && <option value={PAST_PAPERS_SUBJECT}>{PAST_PAPERS_SUBJECT} (mixed subjects)</option>}
                     {((MBBS_STRUCTURE[bulkForm.year] || {})[bulkForm.block] || []).map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs tracking-widest uppercase block mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>Topic</label>
-                  {mbbsAllLeaves(bulkForm.block, bulkForm.subject).length > 0 ? (
+                  {bulkForm.subject === PAST_PAPERS_SUBJECT ? (
+                    <div className="w-full px-3 py-2 text-sm" style={{ border: `1px solid ${T.line}`, background: T.card, color: T.inkSoft }}>
+                      Auto-set to match Source label above
+                    </div>
+                  ) : mbbsAllLeaves(bulkForm.block, bulkForm.subject).length > 0 ? (
                     <select
                       value={bulkForm.topic}
                       onChange={(e) => setBulkForm({ ...bulkForm, topic: e.target.value })}
