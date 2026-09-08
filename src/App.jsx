@@ -1487,6 +1487,92 @@ function mbbsWalk(block, subject, path) {
   return node;
 }
 
+// ---------- MBBS custom Full Length Paper (student-built FLP) ----------
+// "Major topics" for a Block/Subject, one level deep only — used by the MBBS
+// FLP builder (never drills into a folder's own children, per the "Block →
+// Subject → Major Topic" rule). Each entry carries every leaf topic name
+// nested under it (`leaves`), so matching questions from any of its internal
+// subtopics all count toward that one major topic. Subjects with no topic
+// tree defined at all (e.g. Histology, MINORS) fall back to a single bucket
+// covering the whole subject (leaves: null means "don't filter by topic").
+function mbbsMajorTopics(block, subject) {
+  const tree = (MBBS_TOPICS[block] && MBBS_TOPICS[block][subject]) || [];
+  if (tree.length === 0) return [{ name: subject, leaves: null }];
+  return tree.map((item) => ({
+    name: typeof item === "string" ? item : item.name,
+    leaves: mbbsLeafNames(item),
+  }));
+}
+
+// Every question matching one MBBS FLP "bucket" (a chosen major topic within
+// a chosen block/subject) — leaves === null matches the whole subject.
+function mbbsFlpBucketQuestions(bank, year, block, subject, leaves) {
+  return bank.filter(
+    (q) =>
+      q.program === "MBBS" &&
+      (q.year || "") === year &&
+      (q.block || "") === block &&
+      (q.subject || "") === subject &&
+      (leaves === null || leaves.includes(q.topic || ""))
+  );
+}
+
+// Randomly picks up to `count` questions from `pool`, spreading the picks
+// round-robin across each question's internal subtopic (its exact `topic`
+// value) so one subtopic can't dominate — e.g. a "Neuro Anatomy" major topic
+// with 15 internal subtopics won't fill 20 MCQs from just one of them.
+function mbbsFlpSmartPick(pool, count) {
+  if (count <= 0 || pool.length === 0) return [];
+  const byTopic = {};
+  pool.forEach((q) => {
+    const k = q.topic || "_";
+    (byTopic[k] = byTopic[k] || []).push(q);
+  });
+  const topicKeys = shuffleArray(Object.keys(byTopic));
+  topicKeys.forEach((k) => (byTopic[k] = shuffleArray(byTopic[k])));
+  const picked = [];
+  while (picked.length < count) {
+    let addedAny = false;
+    for (const k of topicKeys) {
+      if (picked.length >= count) break;
+      if (byTopic[k].length > 0) {
+        picked.push(byTopic[k].shift());
+        addedAny = true;
+      }
+    }
+    if (!addedAny) break; // pool exhausted — return whatever was found
+  }
+  return picked;
+}
+
+// Builds the questions for one MBBS FLP bucket (one major topic), mixing in
+// ~25% Past Paper MCQs (within the requested 20-30% range) when available,
+// filling the rest from the regular Question Bank, and backfilling from
+// whichever pool has more left if the other runs short — so a bucket without
+// enough past papers still returns the full requested count from the bank.
+function mbbsFlpBucketPick(bank, year, block, subject, leaves, count) {
+  const candidates = mbbsFlpBucketQuestions(bank, year, block, subject, leaves);
+  const pastPool = candidates.filter((q) => isPastPaperSource("MBBS", q.source));
+  const bankPool = candidates.filter((q) => !isPastPaperSource("MBBS", q.source));
+  const pastTarget = Math.round(count * 0.25);
+  let pastPicked = mbbsFlpSmartPick(pastPool, Math.min(pastTarget, pastPool.length));
+  let bankPicked = mbbsFlpSmartPick(bankPool, count - pastPicked.length);
+  // Past papers came up short — top up from the bank instead.
+  if (pastPicked.length + bankPicked.length < count) {
+    const usedIds = new Set([...pastPicked, ...bankPicked].map((q) => q.id));
+    const remaining = bankPool.filter((q) => !usedIds.has(q.id));
+    bankPicked = bankPicked.concat(mbbsFlpSmartPick(remaining, count - pastPicked.length - bankPicked.length));
+  }
+  return [...pastPicked, ...bankPicked];
+}
+
+// Assembles the full FLP across every chosen bucket, then shuffles the whole
+// paper so it isn't grouped by subject.
+function generateMbbsFlp(bank, year, block, selections) {
+  const all = selections.flatMap((sel) => mbbsFlpBucketPick(bank, year, block, sel.subject, sel.leaves, sel.count));
+  return shuffleArray(all);
+}
+
 // ---------- Past Papers — named year/block subfolders per program ----------
 // Each folder entry is either:
 //   - a plain string  → a leaf folder, matched directly against a question's
@@ -4309,7 +4395,7 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome, isAdmin, onDeleteMcqs }) {
+function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onOpenFLP, onHome, isAdmin, onDeleteMcqs }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
   const bySubject = stats?.bySubject || {};
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
@@ -4380,6 +4466,18 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome, isA
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {onOpenFLP && (
+          <div className="flex justify-center mt-10">
+            <button
+              onClick={onOpenFLP}
+              className="flex items-center gap-2 px-6 py-3 text-sm tracking-wide"
+              style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              <FileCheck2 size={16} /> Full Length Paper (FLP)
+            </button>
           </div>
         )}
       </div>
@@ -4950,6 +5048,238 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
               style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
             >
               {timed ? "Begin timed exam →" : "Begin practice →"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- MBBS custom Full Length Paper — step-by-step builder ----------
+// Block → Subjects → Major Topics → MCQ count per topic + test duration →
+// Generate. No name/mobile screen here (that stays exclusive to the
+// MDCAT/KMU CAT fixed FLP tab) — this starts the quiz directly.
+function MbbsFlpSetup({ program, year, bank, onBack, onStart, onHome }) {
+  const [step, setStep] = useState("block"); // block -> subjects -> topics -> counts
+  const [block, setBlockChoice] = useState(null);
+  const [subjects, setSubjects] = useState([]); // chosen subject names
+  const [topicKeys, setTopicKeys] = useState([]); // "Subject::TopicName" strings
+  const [counts, setCounts] = useState({}); // "Subject::TopicName" -> number
+  const [duration, setDuration] = useState(45); // minutes
+  const [customDuration, setCustomDuration] = useState("");
+
+  const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
+  const subjectNames = block ? MBBS_STRUCTURE[year][block] || [] : [];
+
+  // Flat list of every chosen major topic, across every chosen subject.
+  const chosenTopics = subjects.flatMap((subj) =>
+    mbbsMajorTopics(block, subj)
+      .map((t) => ({ ...t, subject: subj, key: `${subj}::${t.name}` }))
+      .filter((t) => topicKeys.includes(t.key))
+  );
+
+  const backToHome = () => {
+    setBlockChoice(null); setSubjects([]); setTopicKeys([]); setCounts({}); setStep("block");
+    onBack();
+  };
+
+  const toggleSubject = (s) => setSubjects((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+  const toggleTopic = (key) => setTopicKeys((cur) => (cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key]));
+
+  const totalCount = chosenTopics.reduce((sum, t) => sum + (counts[t.key] || 0), 0);
+  const finalMinutes = duration === "custom" ? Math.max(1, Number(customDuration) || 0) : duration;
+
+  const generate = () => {
+    const selections = chosenTopics
+      .filter((t) => (counts[t.key] || 0) > 0)
+      .map((t) => ({ subject: t.subject, leaves: t.leaves, count: counts[t.key] }));
+    const questions = generateMbbsFlp(bank, year, block, selections);
+    onStart(questions, { timeLimit: finalMinutes * 60, label: `${block} · Custom FLP` });
+  };
+
+  const Header = ({ backLabel, onBackClick }) => (
+    <div className="flex items-center justify-between mb-6">
+      <button onClick={onBackClick} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+        <ArrowLeft size={16} /> {backLabel}
+      </button>
+      {onHome && (
+        <button onClick={onHome} className="flex items-center gap-1 text-sm" style={{ color: T.inkSoft }}>
+          <HomeIcon size={16} /> Home
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <Header backLabel="Back" onBackClick={step === "block" ? backToHome : () => setStep(step === "subjects" ? "block" : step === "topics" ? "subjects" : "topics")} />
+        <div className="text-xs tracking-widest uppercase mb-1" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.amber }}>
+          {year} · Full Length Paper
+        </div>
+
+        {step === "block" && (
+          <>
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-6">
+              Select a block
+            </h1>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {blockNames.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => { setBlockChoice(b); setSubjects([]); setTopicKeys([]); setCounts({}); setStep("subjects"); }}
+                  className="text-left p-4"
+                  style={{ background: T.card, border: `1px solid ${T.line}` }}
+                >
+                  {b}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {step === "subjects" && (
+          <>
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">
+              {block}
+            </h1>
+            <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Select one or more subjects</p>
+            <div className="space-y-2 mb-8">
+              {subjectNames.map((s) => (
+                <label key={s} className="flex items-center gap-3 p-3 cursor-pointer" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                  <input type="checkbox" checked={subjects.includes(s)} onChange={() => toggleSubject(s)} />
+                  <span>{s}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              disabled={subjects.length === 0}
+              onClick={() => setStep("topics")}
+              className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
+              style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              Next → Major Topics
+            </button>
+          </>
+        )}
+
+        {step === "topics" && (
+          <>
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">
+              Major Topics
+            </h1>
+            <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Select the major topics to include</p>
+            <div className="space-y-6 mb-8">
+              {subjects.map((subj) => (
+                <div key={subj}>
+                  <div className="text-xs tracking-widest uppercase mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                    {subj}
+                  </div>
+                  <div className="space-y-2">
+                    {mbbsMajorTopics(block, subj).map((t) => {
+                      const key = `${subj}::${t.name}`;
+                      const available = mbbsFlpBucketQuestions(bank, year, block, subj, t.leaves).length;
+                      return (
+                        <label key={key} className="flex items-center gap-3 p-3 cursor-pointer" style={{ background: T.card, border: `1px solid ${T.line}` }}>
+                          <input type="checkbox" checked={topicKeys.includes(key)} onChange={() => toggleTopic(key)} disabled={available === 0} />
+                          <span className="flex-1">{t.name}</span>
+                          <span className="text-xs" style={{ color: T.inkSoft }}>{available} available</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              disabled={chosenTopics.length === 0}
+              onClick={() => {
+                setCounts((cur) => {
+                  const next = { ...cur };
+                  chosenTopics.forEach((t) => { if (!(t.key in next)) next[t.key] = Math.min(10, mbbsFlpBucketQuestions(bank, year, block, t.subject, t.leaves).length); });
+                  return next;
+                });
+                setStep("counts");
+              }}
+              className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
+              style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              Next → MCQ count &amp; time
+            </button>
+          </>
+        )}
+
+        {step === "counts" && (
+          <>
+            <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">
+              MCQs &amp; Duration
+            </h1>
+            <p className="text-sm mb-6" style={{ color: T.inkSoft }}>
+              ~20–30% of MCQs per topic come from relevant Past Papers when available.
+            </p>
+            <div className="space-y-5 mb-8">
+              {chosenTopics.map((t) => {
+                const max = Math.max(1, mbbsFlpBucketQuestions(bank, year, block, t.subject, t.leaves).length);
+                const val = Math.min(counts[t.key] || 1, max);
+                return (
+                  <div key={t.key}>
+                    <label className="text-sm block mb-1">
+                      {t.subject} → {t.name} <span style={{ color: T.inkSoft }}>(max {max})</span>
+                    </label>
+                    <input
+                      type="range" min={1} max={max} value={val}
+                      onChange={(e) => setCounts((c) => ({ ...c, [t.key]: Number(e.target.value) }))}
+                      className="w-full"
+                    />
+                    <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-sm">{val} MCQs</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mb-8">
+              <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                Test duration
+              </label>
+              <div className="flex flex-wrap gap-2 items-center">
+                {[30, 45, 60].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setDuration(m)}
+                    className="px-4 py-2 text-sm"
+                    style={{ background: duration === m ? T.ink : T.card, color: duration === m ? T.paper : T.ink, border: `1px solid ${T.line}` }}
+                  >
+                    {m} min
+                  </button>
+                ))}
+                <button
+                  onClick={() => setDuration("custom")}
+                  className="px-4 py-2 text-sm"
+                  style={{ background: duration === "custom" ? T.ink : T.card, color: duration === "custom" ? T.paper : T.ink, border: `1px solid ${T.line}` }}
+                >
+                  Custom
+                </button>
+                {duration === "custom" && (
+                  <input
+                    type="number" min={1} value={customDuration}
+                    onChange={(e) => setCustomDuration(e.target.value)}
+                    placeholder="minutes"
+                    className="w-24 px-3 py-2 text-sm"
+                    style={{ border: `1px solid ${T.line}`, background: T.card }}
+                  />
+                )}
+              </div>
+            </div>
+
+            <button
+              disabled={totalCount === 0 || (duration === "custom" && !customDuration)}
+              onClick={generate}
+              className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
+              style={{ background: T.emerald, color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              Generate FLP ({totalCount} MCQs, {finalMinutes} min) →
             </button>
           </>
         )}
@@ -8855,6 +9185,16 @@ function AppInner() {
     setView("quiz");
   };
 
+  // MBBS's own custom-built FLP (student picks block/subjects/topics/counts
+  // themselves) — a separate mode from the fixed MDCAT/KMU CAT "flp" mode:
+  // no name/phone prompt, no admin-panel attempt record (see finishQuiz),
+  // score shown to the student immediately after submitting.
+  const startMbbsFlpQuiz = (qs, opts = {}) => {
+    setQuizQuestions(qs);
+    setQuizMeta({ label: opts.label || "Custom FLP", timeLimit: opts.timeLimit || null, mode: "mbbs-flp" });
+    setView("quiz");
+  };
+
   // ---- Deep link restore: when a friend opens a shared "?share=..." link,
   // jump them straight to that same chapter/topic/folder instead of Home.
   // Runs once the question bank + user session are ready, then cleans the
@@ -9649,9 +9989,22 @@ function AppInner() {
         stats={stats}
         onBack={() => setView("program")}
         onOpenBlock={openBlock}
+        onOpenFLP={program === "MBBS" ? () => setView("mbbs-flp-setup") : null}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
+      />
+    );
+  }
+  if (view === "mbbs-flp-setup") {
+    return (
+      <MbbsFlpSetup
+        program={program}
+        year={year}
+        bank={bank}
+        onBack={() => setView("year")}
+        onStart={startMbbsFlpQuiz}
+        onHome={() => setView("home")}
       />
     );
   }
@@ -9782,12 +10135,12 @@ function AppInner() {
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
         onFinish={finishQuiz}
-        onExit={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
+        onExit={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home")}
         onHome={() => setView("home")}
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
         onReportQuestion={reportQuestion}
-        deferFeedback={quizMeta.mode === "flp"}
+        deferFeedback={quizMeta.mode === "flp" || quizMeta.mode === "mbbs-flp"}
       />
     );
   }
@@ -9798,7 +10151,7 @@ function AppInner() {
         subject={quizMeta.mode === "normal" ? subject : quizMeta.label}
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
-        onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : "home")}
+        onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home")}
         onHome={() => setView("home")}
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
