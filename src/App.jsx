@@ -670,7 +670,7 @@ export async function loadUserStats(userId) {
   try {
     const { data, error } = await supabase
       .from("user_stats")
-      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, streak, last_challenge_date, name, flp_used, history, course, mbbs_year")
+      .select("total_attempted, total_correct, by_subject, bookmarks, wrong_ids, slow_ids, seen_ids, streak, last_challenge_date, name, flp_used, history, course, mbbs_year")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) throw error;
@@ -682,6 +682,7 @@ export async function loadUserStats(userId) {
       bookmarks: data.bookmarks || [],
       wrongIds: data.wrong_ids || [],
       slowIds: data.slow_ids || [],
+      seenIds: data.seen_ids || [],
       streak: data.streak || 0,
       lastChallengeDate: data.last_challenge_date || null,
       name: data.name || "",
@@ -706,6 +707,7 @@ export async function saveUserStats(userId, stats) {
       bookmarks: stats.bookmarks || [],
       wrong_ids: stats.wrongIds || [],
       slow_ids: stats.slowIds || [],
+      seen_ids: stats.seenIds || [],
       streak: stats.streak || 0,
       last_challenge_date: stats.lastChallengeDate || null,
       name: stats.name || "",
@@ -723,7 +725,7 @@ export async function saveUserStats(userId, stats) {
 }
 
 const EMPTY_USER_STATS = {
-  totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [],
+  totalAttempted: 0, totalCorrect: 0, bySubject: {}, bookmarks: [], wrongIds: [], slowIds: [], seenIds: [],
   streak: 0, lastChallengeDate: null, name: "", flpUsed: {}, history: [], course: null, mbbsYear: null, phone: "",
 };
 
@@ -2165,6 +2167,102 @@ function shuffleArray(arr) {
   return a;
 }
 
+// ---------- Global Back button / edge-swipe gesture / double-back-to-exit ----------
+// The Android Back button, the side-screen swipe gesture, and the browser's
+// own Back action all fire the same DOM `popstate` event — so ONE listener
+// here (armed once, near the bottom of this file where the app mounts)
+// handles all three consistently everywhere in the app.
+//
+// How it works: any screen that has its own "one step back" behavior calls
+// useBackResolver() with a function that returns what Back should do right
+// now (or null/undefined to defer to the screen underneath — e.g. an MBBS
+// FLP wizard defers once it's back at its own first step, letting the
+// normal page-level Back take over). Resolvers are checked most-specific
+// (most recently mounted) first. If NONE of them claim the Back press, the
+// user is genuinely at the app's root screen — in that case Back does
+// nothing but show "Press back again to exit" the first time, and only
+// really exits if pressed again within 2 seconds.
+let backResolvers = [];
+function registerBackResolver(resolver) {
+  backResolvers = [resolver, ...backResolvers];
+  return () => { backResolvers = backResolvers.filter((r) => r !== resolver); };
+}
+function resolveBackAction() {
+  for (const r of backResolvers) {
+    const action = r();
+    if (action) return action;
+  }
+  return null;
+}
+
+let exitArmed = false;
+let exitArmTimer = null;
+
+// Keeps exactly one browser history entry "in reserve" at all times, so the
+// very next Back action (of any kind) is always caught by this app instead
+// of immediately closing it.
+function armBackSentinel() {
+  try { window.history.pushState({ __appBack: true }, ""); } catch (e) {}
+}
+
+function showExitToast() {
+  let el = document.getElementById("__smartprep_exit_toast__");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "__smartprep_exit_toast__";
+    el.style.cssText =
+      "position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#1a1a1a;color:#fff;" +
+      "padding:10px 20px;border-radius:8px;font-size:14px;font-family:sans-serif;z-index:99999;" +
+      "box-shadow:0 4px 14px rgba(0,0,0,0.25);opacity:0;transition:opacity .2s ease;pointer-events:none;";
+    document.body.appendChild(el);
+  }
+  el.textContent = "Press back again to exit";
+  el.style.opacity = "1";
+  clearTimeout(el.__hideTimer);
+  el.__hideTimer = setTimeout(() => { el.style.opacity = "0"; }, 1800);
+}
+
+function handleDeviceBack() {
+  const action = resolveBackAction();
+  if (action) {
+    action();
+    armBackSentinel(); // one step taken — re-arm so the NEXT Back is caught too
+    return;
+  }
+  // Nothing on-screen wants this Back press — the user is at the true root.
+  if (exitArmed) {
+    clearTimeout(exitArmTimer);
+    exitArmed = false;
+    return; // don't re-arm: let this Back action really exit
+  }
+  exitArmed = true;
+  showExitToast();
+  exitArmTimer = setTimeout(() => { exitArmed = false; }, 2000);
+  armBackSentinel(); // cancel this attempt, stay put
+}
+
+// Call once, near the top of whichever component owns the page (App) — sets
+// up the sentinel + the single global popstate listener.
+function useGlobalBackHandler() {
+  useEffect(() => {
+    armBackSentinel();
+    window.addEventListener("popstate", handleDeviceBack);
+    return () => window.removeEventListener("popstate", handleDeviceBack);
+  }, []);
+}
+
+// Call from any screen/wizard that has its own internal steps. `getAction`
+// is re-read fresh on every render (via a ref) but only registered/
+// unregistered once per mount, so it always reflects the latest state
+// without re-registering on every keystroke.
+function useBackResolver(getAction) {
+  const ref = useRef(getAction);
+  ref.current = getAction;
+  useEffect(() => {
+    return registerBackResolver(() => ref.current());
+  }, []);
+}
+
 // Shuffles a question's option order (A/B/C/D) so the correct answer isn't always
 // in the same position on repeat attempts — remaps `correct` to match the new order.
 function shuffleQuestionOptions(q) {
@@ -2226,13 +2324,14 @@ function Bubble({ letter, state, onClick, disabled }) {
 }
 
 // ---------- Bottom Nav ----------
-function BottomNav({ tab, setTab, onSaved, userCourse }) {
+function BottomNav({ tab, setTab, onSaved, userCourse, onOpenMbbsFlp }) {
   const items = [
     { key: "home", label: "Home", icon: HomeIcon },
     { key: "pastpapers", label: "Past Papers", icon: FileText },
-    // FLP only exists for MDCAT and KMU CAT — hidden from the nav entirely
-    // for every other course instead of showing an empty/"coming soon" tab.
-    ...(FLP_PROGRAMS.includes(userCourse) ? [{ key: "flp", label: "FLP", icon: FileCheck2 }] : []),
+    // FLP: MDCAT/KMU CAT get the fixed-paper list (via the "flp" tab below);
+    // MBBS gets its own custom-builder wizard instead (see onClick) — hidden
+    // from the nav entirely for every other course.
+    ...(FLP_PROGRAMS.includes(userCourse) || userCourse === "MBBS" ? [{ key: "flp", label: "FLP", icon: FileCheck2 }] : []),
     { key: "notes", label: "Notes", icon: BookOpen },
     { key: "saved", label: "Saved", icon: Bookmark },
   ];
@@ -2247,7 +2346,11 @@ function BottomNav({ tab, setTab, onSaved, userCourse }) {
         return (
           <button
             key={it.key}
-            onClick={() => (it.key === "saved" ? onSaved && onSaved() : setTab(it.key))}
+            onClick={() =>
+              it.key === "saved" ? onSaved && onSaved() :
+              it.key === "flp" && userCourse === "MBBS" ? onOpenMbbsFlp && onOpenMbbsFlp() :
+              setTab(it.key)
+            }
             className="flex flex-col items-center gap-1 px-3 py-1"
             style={{ color: active ? "#6FA3F5" : T.inkSoft }}
           >
@@ -3451,8 +3554,21 @@ function Home({
   userId,
   flpShareNav, onClearFLPShareNav,
   userMbbsYear,
+  onOpenMbbsFlp,
 }) {
   const [navTab, setNavTab] = useState("home");
+
+  // Device Back / gesture inside Home: the bottom-nav tabs (FLP, Saved,
+  // Profile) go back to Home; everything reachable only from the Profile
+  // tab (Settings, Progress, Reviews, Syllabus, Guidelines, Contact) goes
+  // back to Profile. Defers to the app-level Back (which shows the "press
+  // again to exit" prompt) once navTab is already "home".
+  useBackResolver(() => {
+    if (navTab === "home") return null;
+    if (["flp", "saved", "profile"].includes(navTab)) return () => setNavTab("home");
+    return () => setNavTab("profile");
+  });
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   // FLP: ask for real name + mobile number right before the paper opens, so
@@ -3618,7 +3734,7 @@ function Home({
     return (
       <>
         <NotesFlow notesBank={notesBank} programs={programs} onExit={() => setNavTab("home")} isAdmin={isAdmin} onAddNote={onAddNote} />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </>
     );
   }
@@ -3649,7 +3765,7 @@ function Home({
             })}
           </div>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </div>
     );
   }
@@ -3752,7 +3868,7 @@ function Home({
             </div>
           </div>
         )}
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </div>
     );
   }
@@ -3848,7 +3964,7 @@ function Home({
             </div>
           )}
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </div>
     );
   }
@@ -3864,7 +3980,7 @@ function Home({
           socialLinks={socialLinks}
           onUpdateSocialLink={onUpdateSocialLink}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </>
     );
   }
@@ -3892,7 +4008,7 @@ function Home({
           onToggleProgram={onToggleReviewProgram}
           isAdmin={isAdmin}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </>
     );
   }
@@ -3912,7 +4028,7 @@ function Home({
           emptyText="The syllabus breakdown will appear here soon."
           programs={programs}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </>
     );
   }
@@ -3932,7 +4048,7 @@ function Home({
           emptyText="Exam & app guidelines will appear here soon."
           programs={programs}
         />
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </>
     );
   }
@@ -3981,7 +4097,7 @@ function Home({
             <LogOut size={14} /> Sign out
           </button>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </div>
     );
   }
@@ -4040,7 +4156,7 @@ function Home({
             <LogOut size={14} /> Sign out
           </button>
         </div>
-        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+        <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
       </div>
     );
   }
@@ -4258,7 +4374,7 @@ function Home({
         )}
       </main>
 
-      <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} />
+      <BottomNav tab={navTab} setTab={setNavTab} onSaved={onOpenSaved} userCourse={userCourse} onOpenMbbsFlp={onOpenMbbsFlp} />
     </div>
   );
 }
@@ -4395,7 +4511,7 @@ function ProgramPage({ program, bank, stats, onBack, onOpenSubject, onOpenYear, 
 }
 
 // ---------- MBBS Year page (lists Blocks within a chosen year) ----------
-function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onOpenFLP, onHome, isAdmin, onDeleteMcqs }) {
+function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onHome, isAdmin, onDeleteMcqs }) {
   const yearQuestions = bank.filter((q) => q.program === program && (q.year || "") === year);
   const bySubject = stats?.bySubject || {};
   const blockNames = Object.keys(MBBS_STRUCTURE[year] || {});
@@ -4466,18 +4582,6 @@ function YearPage({ program, year, bank, stats, onBack, onOpenBlock, onOpenFLP, 
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {onOpenFLP && (
-          <div className="flex justify-center mt-10">
-            <button
-              onClick={onOpenFLP}
-              className="flex items-center gap-2 px-6 py-3 text-sm tracking-wide"
-              style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
-            >
-              <FileCheck2 size={16} /> Full Length Paper (FLP)
-            </button>
           </div>
         )}
       </div>
@@ -5084,6 +5188,18 @@ function MbbsFlpSetup({ program, year, bank, onBack, onStart, onHome }) {
     onBack();
   };
 
+  // Device Back / gesture while inside this wizard: step back one screen at
+  // a time (counts -> topics -> subjects -> block), same as the on-screen
+  // Back button above. Once already at "block" (this wizard's own first
+  // screen), defer outward — the page-level Back then returns to the Year
+  // page, same as backToHome() does.
+  useBackResolver(() => {
+    if (step === "counts") return () => setStep("topics");
+    if (step === "topics") return () => setStep("subjects");
+    if (step === "subjects") return () => setStep("block");
+    return null;
+  });
+
   const toggleSubject = (s) => setSubjects((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
   const toggleTopic = (key) => setTopicKeys((cur) => (cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key]));
 
@@ -5336,7 +5452,7 @@ function AdminReplyInline({ onSubmit }) {
   );
 }
 
-function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onStart, onHome, discussions, onPostDiscussion, onLikeDiscussion, onReplyDiscussion, onDeleteDiscussion, currentUserName, isAdmin, onDeleteMcqs }) {
+function SubjectSetup({ program, year, block, topic, subject, bank, seenIds, onBack, onStart, onHome, discussions, onPostDiscussion, onLikeDiscussion, onReplyDiscussion, onDeleteDiscussion, currentUserName, isAdmin, onDeleteMcqs }) {
   const subjQuestions = bank.filter(
     (q) =>
       q.program === program &&
@@ -5356,6 +5472,18 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
   const filtered = source === "All" ? subjQuestions : subjQuestions.filter((q) => q.source === source);
   const maxCount = filtered.length;
   const chosenCount = Math.min(count, Math.max(1, maxCount));
+  // Non-repetition: within this exact topic/source pool, questions the
+  // student hasn't attempted yet always come first. Only once every
+  // question here has already been seen does the pool "recycle" (start
+  // reusing already-attempted ones) so practice never just runs dry.
+  const seenSet = useMemo(() => new Set(seenIds || []), [seenIds]);
+  const buildSession = (n) => {
+    const unseen = shuffleArray(filtered.filter((q) => !seenSet.has(q.id)));
+    if (unseen.length >= n) return unseen.slice(0, n);
+    const recycled = shuffleArray(filtered.filter((q) => seenSet.has(q.id)));
+    return [...unseen, ...recycled].slice(0, n);
+  };
+  const newCount = filtered.filter((q) => !seenSet.has(q.id)).length;
   const SECONDS_PER_Q = 60;
   const topicKey = [program, year, block, subject, topic].filter(Boolean).join(" | ");
   const thread = (discussions && discussions[topicKey]) || [];
@@ -5434,6 +5562,11 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
           <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-lg mt-1">
             {Math.min(count, Math.max(1, maxCount))} questions
           </div>
+          {maxCount > 0 && (
+            <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+              {newCount > 0 ? `${newCount} not attempted yet — served first` : "All questions here have been attempted — recycling for revision"}
+            </div>
+          )}
         </div>
 
         <div className="mb-8">
@@ -5447,7 +5580,7 @@ function SubjectSetup({ program, year, block, topic, subject, bank, onBack, onSt
 
         <button
           disabled={maxCount === 0}
-          onClick={() => onStart(shuffleArray(filtered).slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
+          onClick={() => onStart(buildSession(chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
           className="px-6 py-3 text-sm tracking-wide disabled:opacity-40"
           style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
         >
@@ -9110,6 +9243,16 @@ function AppInner() {
     if (userCourse && p !== userCourse) return; // defensive: students can't jump into another course
     setProgram(p); setYear(null); setBlock(null); setTopic(null); setMbbsPath([]); setView("program");
   };
+  // Bottom-nav "FLP" tab for MBBS students: skips Year selection entirely
+  // (an MBBS account is always locked to one year already) and jumps
+  // straight into that year's custom FLP builder.
+  const openMbbsFlp = () => {
+    setProgram("MBBS");
+    setYear(userMbbsYear);
+    setBlock(null);
+    setView("mbbs-flp-setup");
+  };
+
   const openYear = (y) => {
     if (userMbbsYear && y !== userMbbsYear) return; // defensive: MBBS students can't jump into another year (e.g. via an old share link)
     setYear(y); setBlock(null); setView("year");
@@ -9158,6 +9301,47 @@ function AppInner() {
       setView("block");
     }
   };
+
+  // One place that knows "what should Back do from wherever the user
+  // currently is" — mirrors exactly what each screen's own on-screen Back
+  // button already does, so the device Back button/gesture behaves
+  // identically to tapping Back on the screen.
+  const goBack = () => {
+    if (view === "program") { setView("home"); return; }
+    if (view === "mbbs-flp-setup") { setView("year"); return; }
+    if (view === "year") { setView("program"); return; }
+    if (view === "block") { setView("year"); return; }
+    if (view === "topic") { setView("program"); return; }
+    if (view === "mbbs-topic") { backMbbsTopic(); return; }
+    if (view === "subject") {
+      const subjectHasTopics = TOPIC_PROGRAMS.includes(program) && (MDCAT_TOPICS[subject] || []).length > 0;
+      const mbbsTreeActive = program === "MBBS" && mbbsWalk(block, subject, []).length > 0;
+      setView(program === "MBBS" ? (mbbsTreeActive ? "mbbs-topic" : "block") : subjectHasTopics ? "topic" : "program");
+      return;
+    }
+    if (view === "pastpaper-folders") { setView("home"); return; }
+    if (view === "pastpaper-subfolders") { setView("pastpaper-folders"); return; }
+    if (view === "pastpaper-setup") { setView(pastPaperParent ? "pastpaper-subfolders" : "pastpaper-folders"); return; }
+    if (view === "quiz" || view === "results") {
+      setView(
+        quizMeta.mode === "normal" ? "subject" :
+        quizMeta.mode === "pastpaper" ? "pastpaper-setup" :
+        quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home"
+      );
+      return;
+    }
+    // leaderboard, admin-gate, admin, and anything else: one level is Home.
+    setView("home");
+  };
+
+  // Registers the above with the global Back-button/gesture listener. Only
+  // claims the Back press while we're not already on the Home screen —
+  // Home (and any wizard mounted "inside" a view, like the MBBS FLP
+  // builder) registers its own, more specific resolver that runs first and
+  // only defers back to this one once it's at its own starting step.
+  useGlobalBackHandler();
+  useBackResolver(() => (view !== "home" ? goBack : null));
+
   const startQuiz = (qs, opts = {}) => {
     setQuizQuestions(qs);
     setQuizMeta({ label: subject, timeLimit: opts.timeLimit || null, mode: "normal" });
@@ -9764,6 +9948,7 @@ function AppInner() {
     const computeNext = (current) => {
       const wrongSet = new Set(current.wrongIds || []);
       const slowSet = new Set(current.slowIds || []);
+      const seenSet = new Set(current.seenIds || []);
       res.questions.forEach((qq, i) => {
         if (res.answers[i] === qq.correct) wrongSet.delete(qq.id);
         else wrongSet.add(qq.id);
@@ -9774,6 +9959,11 @@ function AppInner() {
         } else if (elapsed !== null && elapsed !== undefined) {
           slowSet.delete(qq.id);
         }
+
+        // Only regular topic practice avoids repeats — a fixed Past Paper or
+        // FLP is meant to be the same complete paper every time, not a
+        // rotating pool, so those never mark questions as "seen" here.
+        if (quizMeta.mode === "normal") seenSet.add(qq.id);
       });
 
       let streak = current.streak || 0;
@@ -9806,6 +9996,7 @@ function AppInner() {
         bookmarks: current.bookmarks || [],
         wrongIds: Array.from(wrongSet),
         slowIds: Array.from(slowSet),
+        seenIds: Array.from(seenSet),
         streak,
         lastChallengeDate,
         name: user?.user_metadata?.name || current.name || "",
@@ -9927,14 +10118,15 @@ function AppInner() {
         flpShareNav={flpShareNav}
         onClearFLPShareNav={() => setFlpShareNav(null)}
         userMbbsYear={userMbbsYear}
+        onOpenMbbsFlp={openMbbsFlp}
       />
     );
   }
   if (view === "leaderboard") {
-    return <LeaderboardView onBack={() => setView("home")} currentUserName={user?.user_metadata?.name || ""} userCourse={userCourse} userMbbsYear={userMbbsYear} />;
+    return <LeaderboardView onBack={goBack} currentUserName={user?.user_metadata?.name || ""} userCourse={userCourse} userMbbsYear={userMbbsYear} />;
   }
   if (view === "admin-gate") {
-    return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={() => setView("home")} />;
+    return <AdminGate onUnlock={() => { setAdminUnlocked(true); setView("admin"); }} onBack={goBack} />;
   }
   if (view === "admin") {
     return (
@@ -9949,8 +10141,7 @@ function AppInner() {
         onResolveReport={resolveReport}
         onDeleteReport={deleteReport}
         explanationFeedback={explanationFeedback}
-        onExit={() => setView("home")}
-        isDark={isDark}
+        onExit={goBack}
         onToggleTheme={toggleTheme}
         socialLinks={socialLinks}
         onUpdateSocialLink={updateSocialLink}
@@ -9970,7 +10161,7 @@ function AppInner() {
         program={program}
         bank={bank}
         stats={stats}
-        onBack={() => setView("home")}
+        onBack={goBack}
         onOpenSubject={openSubject}
         onOpenYear={openYear}
         onHome={() => setView("home")}
@@ -9987,9 +10178,8 @@ function AppInner() {
         year={year}
         bank={bank}
         stats={stats}
-        onBack={() => setView("program")}
+        onBack={goBack}
         onOpenBlock={openBlock}
-        onOpenFLP={program === "MBBS" ? () => setView("mbbs-flp-setup") : null}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
         onDeleteMcqs={deleteMcqsByIds}
@@ -10002,7 +10192,7 @@ function AppInner() {
         program={program}
         year={year}
         bank={bank}
-        onBack={() => setView("year")}
+        onBack={goBack}
         onStart={startMbbsFlpQuiz}
         onHome={() => setView("home")}
       />
@@ -10016,7 +10206,7 @@ function AppInner() {
         block={block}
         bank={bank}
         stats={stats}
-        onBack={() => setView("year")}
+        onBack={goBack}
         onOpenSubject={openSubject}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
@@ -10031,7 +10221,7 @@ function AppInner() {
         subject={subject}
         bank={bank}
         stats={stats}
-        onBack={() => setView("program")}
+        onBack={goBack}
         onOpenTopic={openTopic}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
@@ -10068,7 +10258,8 @@ function AppInner() {
         topic={(subjectHasTopics || mbbsTreeActive) ? topic : null}
         subject={subject}
         bank={bank}
-        onBack={() => setView(program === "MBBS" ? (mbbsTreeActive ? "mbbs-topic" : "block") : subjectHasTopics ? "topic" : "program")}
+        seenIds={stats?.seenIds || []}
+        onBack={goBack}
         onStart={startQuiz}
         onHome={() => setView("home")}
         discussions={discussions}
@@ -10087,7 +10278,7 @@ function AppInner() {
       <PastPaperFoldersPage
         program={program}
         bank={bank}
-        onBack={() => setView("home")}
+        onBack={goBack}
         onOpenFolder={openPastPaperFolder}
         onOpenSubfolders={openPastPaperSubfolders}
         onHome={() => setView("home")}
@@ -10103,7 +10294,7 @@ function AppInner() {
         program={program}
         parent={pastPaperParent}
         bank={bank}
-        onBack={() => setView("pastpaper-folders")}
+        onBack={goBack}
         onOpenFolder={openPastPaperFolder}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
@@ -10118,7 +10309,7 @@ function AppInner() {
         program={program}
         folder={pastPaperFolder}
         bank={bank}
-        onBack={() => setView(pastPaperParent ? "pastpaper-subfolders" : "pastpaper-folders")}
+        onBack={goBack}
         onStart={startPastPaperQuiz}
         onHome={() => setView("home")}
         isAdmin={adminUnlocked}
@@ -10135,7 +10326,7 @@ function AppInner() {
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
         onFinish={finishQuiz}
-        onExit={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home")}
+        onExit={goBack}
         onHome={() => setView("home")}
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
@@ -10151,7 +10342,7 @@ function AppInner() {
         subject={quizMeta.mode === "normal" ? subject : quizMeta.label}
         bookmarks={stats?.bookmarks || []}
         onToggleBookmark={toggleBookmark}
-        onRetry={() => setView(quizMeta.mode === "normal" ? "subject" : quizMeta.mode === "pastpaper" ? "pastpaper-setup" : quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home")}
+        onRetry={goBack}
         onHome={() => setView("home")}
         explanationFeedback={explanationFeedback}
         onVoteExplanation={voteExplanation}
