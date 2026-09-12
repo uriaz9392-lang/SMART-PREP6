@@ -2195,9 +2195,6 @@ function resolveBackAction() {
   return null;
 }
 
-let exitArmed = false;
-let exitArmTimer = null;
-
 // Keeps exactly one browser history entry "in reserve" at all times, so the
 // very next Back action (of any kind) is always caught by this app instead
 // of immediately closing it.
@@ -2205,40 +2202,65 @@ function armBackSentinel() {
   try { window.history.pushState({ __appBack: true }, ""); } catch (e) {}
 }
 
-function showExitToast() {
-  let el = document.getElementById("__smartprep_exit_toast__");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "__smartprep_exit_toast__";
-    el.style.cssText =
-      "position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#1a1a1a;color:#fff;" +
-      "padding:10px 20px;border-radius:8px;font-size:14px;font-family:sans-serif;z-index:99999;" +
-      "box-shadow:0 4px 14px rgba(0,0,0,0.25);opacity:0;transition:opacity .2s ease;pointer-events:none;";
-    document.body.appendChild(el);
-  }
-  el.textContent = "Press back again to exit";
-  el.style.opacity = "1";
-  clearTimeout(el.__hideTimer);
-  el.__hideTimer = setTimeout(() => { el.style.opacity = "0"; }, 1800);
+let exitDialogOpen = false;
+let unregisterExitDialogResolver = null;
+
+function closeExitDialog() {
+  const el = document.getElementById("__smartprep_exit_dialog__");
+  if (el) el.remove();
+  exitDialogOpen = false;
+  if (unregisterExitDialogResolver) { unregisterExitDialogResolver(); unregisterExitDialogResolver = null; }
+}
+
+let bypassNextBack = false;
+
+function confirmExitYes() {
+  closeExitDialog();
+  bypassNextBack = true; // let the following Back action really go through
+  try { window.close(); } catch (e) {}
+  window.history.back();
+}
+
+// Shown once, the very first time Back is pressed with nothing left to
+// undo (i.e. already on the true Home screen) — no second press needed.
+// A Back press while this is open just closes it again (same as "No"),
+// same as a standard Android dialog.
+function openExitDialog() {
+  if (exitDialogOpen) return;
+  exitDialogOpen = true;
+  unregisterExitDialogResolver = registerBackResolver(() => closeExitDialog());
+  armBackSentinel(); // stay put on Home until the user actually answers
+
+  const el = document.createElement("div");
+  el.id = "__smartprep_exit_dialog__";
+  el.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;" +
+    "justify-content:center;z-index:99999;font-family:sans-serif;";
+  el.innerHTML =
+    '<div style="background:#fff;color:#111;border-radius:14px;padding:24px;max-width:300px;width:85%;' +
+    'text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.35);">' +
+    '<div style="font-size:16px;margin-bottom:20px;">Do you want to exit the app?</div>' +
+    '<div style="display:flex;gap:10px;justify-content:center;">' +
+    '<button id="__smartprep_exit_no__" style="flex:1;padding:10px 0;border-radius:8px;border:1px solid #ccc;' +
+    'background:#f5f5f5;color:#111;font-size:14px;">No</button>' +
+    '<button id="__smartprep_exit_yes__" style="flex:1;padding:10px 0;border-radius:8px;border:none;' +
+    'background:#d9364a;color:#fff;font-size:14px;">Yes</button>' +
+    "</div></div>";
+  document.body.appendChild(el);
+  document.getElementById("__smartprep_exit_no__").onclick = closeExitDialog;
+  document.getElementById("__smartprep_exit_yes__").onclick = confirmExitYes;
 }
 
 function handleDeviceBack() {
+  if (bypassNextBack) { bypassNextBack = false; return; } // this one's for real — don't intercept
   const action = resolveBackAction();
   if (action) {
     action();
     armBackSentinel(); // one step taken — re-arm so the NEXT Back is caught too
     return;
   }
-  // Nothing on-screen wants this Back press — the user is at the true root.
-  if (exitArmed) {
-    clearTimeout(exitArmTimer);
-    exitArmed = false;
-    return; // don't re-arm: let this Back action really exit
-  }
-  exitArmed = true;
-  showExitToast();
-  exitArmTimer = setTimeout(() => { exitArmed = false; }, 2000);
-  armBackSentinel(); // cancel this attempt, stay put
+  // Nothing on-screen claimed it — the user is at the true Home screen.
+  openExitDialog();
 }
 
 // Call once, near the top of whichever component owns the page (App) — sets
