@@ -28,6 +28,47 @@ const SUPABASE_ANON_KEY = "sb_publishable_q_gmTPI3dh6wqAqgHDXKpg_wrTkA5ia";
 // truth; the Worker is only pushed a fresh copy whenever the admin saves.
 const CDN_BASE = "https://smart-prep-worker.uriaz9392.workers.dev";
 const CDN_ADMIN_KEY = "THpKGBzsM4dtsa9ruyvmlxbD6AzPfMwB-ZOawZmHSqY";
+
+// ---- Generic CDN cache for every other small app_data resource ----
+// Same idea as the bank: Supabase stays the one real source of truth, the
+// Worker's /data/:name routes are just a free, fast, high-bandwidth copy in
+// front of it — this is what keeps Supabase egress low across ALL of the
+// app's data, not just the MCQ bank. Any resource not yet worth caching
+// simply never calls these two and reads/writes Supabase directly, same as
+// before — nothing about that path changes.
+//
+// `supabaseLoad` only runs on a genuine cache miss or CDN failure, so a
+// Worker outage never breaks the app — it just means that one read goes to
+// Supabase instead, exactly like today.
+async function loadFromCdn(name, supabaseLoad) {
+  try {
+    const res = await fetch(`${CDN_BASE}/data/${name}`);
+    if (res.ok) {
+      const cached = await res.json();
+      if (cached !== null) return cached;
+    }
+  } catch (e) {
+    // CDN unreachable — fall through to Supabase below.
+  }
+  return supabaseLoad();
+}
+
+// Best-effort push to the CDN after a successful Supabase save. Never
+// throws — if the Worker is briefly down, the save itself (to Supabase)
+// already succeeded; this only affects how fast other students' next read
+// picks up the change.
+async function pushToCdn(name, value) {
+  try {
+    await fetch(`${CDN_BASE}/data/${name}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-admin-key": CDN_ADMIN_KEY },
+      body: JSON.stringify(value),
+    });
+  } catch (e) {
+    console.error(`CDN push failed for ${name}:`, e?.message || e);
+  }
+}
+
 // Public VAPID key for Web Push — this one is MEANT to be public (it's the
 // "public" half of the key pair; the private half stays a secret on the
 // Cloudflare Worker only). Fill this in with the key from `npx web-push
@@ -227,14 +268,16 @@ export async function updatePassword(newPassword) {
 // ---- Notes (shared, admin-authored) ----
 // Requires a `notes` jsonb column on the `app_data` table (default value []).
 export async function loadNotes() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("notes").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.notes) || [];
-  } catch (e) {
-    console.error("Load notes failed (add a 'notes' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("notes", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("notes").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.notes) || [];
+    } catch (e) {
+      console.error("Load notes failed (add a 'notes' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveNotes(notes) {
   try {
@@ -244,6 +287,7 @@ export async function saveNotes(notes) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, notes });
       if (insertError) throw insertError;
     }
+    await pushToCdn("notes", notes);
     return true;
   } catch (e) {
     console.error("Save notes failed (add a 'notes' jsonb column to app_data):", e);
@@ -254,14 +298,16 @@ export async function saveNotes(notes) {
 // ---- Notifications (shared, admin-authored) ----
 // Requires a `notifications` jsonb column on the `app_data` table (default value []).
 export async function loadNotifications() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("notifications").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.notifications) || [];
-  } catch (e) {
-    console.error("Load notifications failed (add a 'notifications' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("notifications", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("notifications").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.notifications) || [];
+    } catch (e) {
+      console.error("Load notifications failed (add a 'notifications' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveNotifications(notifications) {
   try {
@@ -271,6 +317,7 @@ export async function saveNotifications(notifications) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, notifications });
       if (insertError) throw insertError;
     }
+    await pushToCdn("notifications", notifications);
     return true;
   } catch (e) {
     console.error("Save notifications failed (add a 'notifications' jsonb column to app_data):", e);
@@ -303,14 +350,16 @@ export async function uploadNotePdf(file) {
 // ---- Reviews (public — any signed-in student can add one, everyone can read) ----
 // Requires a `reviews` jsonb column on the `app_data` table (default value []).
 export async function loadReviews() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("reviews").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.reviews) || [];
-  } catch (e) {
-    console.error("Load reviews failed (add a 'reviews' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("reviews", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("reviews").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.reviews) || [];
+    } catch (e) {
+      console.error("Load reviews failed (add a 'reviews' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveReviews(reviews) {
   try {
@@ -320,6 +369,7 @@ export async function saveReviews(reviews) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, reviews });
       if (insertError) throw insertError;
     }
+    await pushToCdn("reviews", reviews);
     return true;
   } catch (e) {
     console.error("Save reviews failed (add a 'reviews' jsonb column to app_data):", e);
@@ -331,14 +381,16 @@ export async function saveReviews(reviews) {
 // Requires an `explanation_feedback` jsonb column on `app_data` (default value {}).
 // Shape: { [questionId]: { up: number, down: number } }
 export async function loadExplanationFeedback() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("explanation_feedback").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.explanation_feedback) || {};
-  } catch (e) {
-    console.error("Load explanation feedback failed (add an 'explanation_feedback' jsonb column to app_data):", e);
-    return {};
-  }
+  return loadFromCdn("explanationfeedback", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("explanation_feedback").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.explanation_feedback) || {};
+    } catch (e) {
+      console.error("Load explanation feedback failed (add an 'explanation_feedback' jsonb column to app_data):", e);
+      return {};
+    }
+  });
 }
 export async function saveExplanationFeedback(feedback) {
   try {
@@ -348,6 +400,7 @@ export async function saveExplanationFeedback(feedback) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, explanation_feedback: feedback });
       if (insertError) throw insertError;
     }
+    await pushToCdn("explanationfeedback", feedback);
     return true;
   } catch (e) {
     console.error("Save explanation feedback failed (add an 'explanation_feedback' jsonb column to app_data):", e);
@@ -358,14 +411,16 @@ export async function saveExplanationFeedback(feedback) {
 // ---- Question reports (students flag a wrong/confusing MCQ, admin reviews) ----
 // Requires a `question_reports` jsonb column on `app_data` (default value []).
 export async function loadQuestionReports() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("question_reports").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.question_reports) || [];
-  } catch (e) {
-    console.error("Load question reports failed (add a 'question_reports' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("questionreports", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("question_reports").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.question_reports) || [];
+    } catch (e) {
+      console.error("Load question reports failed (add a 'question_reports' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveQuestionReports(reports) {
   try {
@@ -375,6 +430,7 @@ export async function saveQuestionReports(reports) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, question_reports: reports });
       if (insertError) throw insertError;
     }
+    await pushToCdn("questionreports", reports);
     return true;
   } catch (e) {
     console.error("Save question reports failed (add a 'question_reports' jsonb column to app_data):", e);
@@ -386,14 +442,16 @@ export async function saveQuestionReports(reports) {
 // Requires a `discussions` jsonb column on `app_data` (default value {}).
 // Shape: { [topicKey]: [{ id, name, text, createdAt }] }
 export async function loadDiscussions() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("discussions").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.discussions) || {};
-  } catch (e) {
-    console.error("Load discussions failed (add a 'discussions' jsonb column to app_data):", e);
-    return {};
-  }
+  return loadFromCdn("discussions", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("discussions").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.discussions) || {};
+    } catch (e) {
+      console.error("Load discussions failed (add a 'discussions' jsonb column to app_data):", e);
+      return {};
+    }
+  });
 }
 export async function saveDiscussions(discussions) {
   try {
@@ -403,6 +461,7 @@ export async function saveDiscussions(discussions) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, discussions });
       if (insertError) throw insertError;
     }
+    await pushToCdn("discussions", discussions);
     return true;
   } catch (e) {
     console.error("Save discussions failed (add a 'discussions' jsonb column to app_data):", e);
@@ -445,14 +504,16 @@ export async function loadAllStudentSubjectStats() {
 
 // Requires a `syllabus` jsonb column on the `app_data` table (default value []).
 export async function loadSyllabusItems() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("syllabus").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.syllabus) || [];
-  } catch (e) {
-    console.error("Load syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("syllabus", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("syllabus").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.syllabus) || [];
+    } catch (e) {
+      console.error("Load syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveSyllabusItems(syllabus) {
   try {
@@ -462,6 +523,7 @@ export async function saveSyllabusItems(syllabus) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, syllabus });
       if (insertError) throw insertError;
     }
+    await pushToCdn("syllabus", syllabus);
     return true;
   } catch (e) {
     console.error("Save syllabus failed (add a 'syllabus' jsonb column to app_data):", e);
@@ -472,14 +534,16 @@ export async function saveSyllabusItems(syllabus) {
 // ---- Guideline items (admin-authored: links, PDFs, or text blocks) ----
 // Requires a `guidelines` jsonb column on the `app_data` table (default value []).
 export async function loadGuidelineItems() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("guidelines").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.guidelines) || [];
-  } catch (e) {
-    console.error("Load guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("guidelines", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("guidelines").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.guidelines) || [];
+    } catch (e) {
+      console.error("Load guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveGuidelineItems(guidelines) {
   try {
@@ -489,6 +553,7 @@ export async function saveGuidelineItems(guidelines) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, guidelines });
       if (insertError) throw insertError;
     }
+    await pushToCdn("guidelines", guidelines);
     return true;
   } catch (e) {
     console.error("Save guidelines failed (add a 'guidelines' jsonb column to app_data):", e);
@@ -502,14 +567,16 @@ export async function saveGuidelineItems(guidelines) {
 // Full Course Test" is the same paper for everyone who takes it, like a
 // real exam.
 export async function loadFLPTests() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.flp_tests) || [];
-  } catch (e) {
-    console.error("Load FLP tests failed (add a 'flp_tests' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("flptests", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("flp_tests").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.flp_tests) || [];
+    } catch (e) {
+      console.error("Load FLP tests failed (add a 'flp_tests' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveFLPTests(flpTests) {
   try {
@@ -519,6 +586,7 @@ export async function saveFLPTests(flpTests) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, flp_tests: flpTests });
       if (insertError) throw insertError;
     }
+    await pushToCdn("flptests", flpTests);
     return true;
   } catch (e) {
     console.error("Save FLP tests failed (add a 'flp_tests' jsonb column to app_data):", e);
@@ -544,6 +612,7 @@ export async function addFLPTestRemote(test) {
     const next = [...current, test];
     const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
     if (updateError) throw updateError;
+    await pushToCdn("flptests", next);
     return { list: next, error: null };
   } catch (e) {
     const message = e?.message || String(e);
@@ -559,6 +628,7 @@ export async function removeFLPTestRemote(id) {
     const next = current.filter((t) => t.id !== id);
     const { error: updateError } = await supabase.from("app_data").update({ flp_tests: next }).eq("id", 1).select("id");
     if (updateError) throw updateError;
+    await pushToCdn("flptests", next);
     return { list: next, error: null };
   } catch (e) {
     const message = e?.message || String(e);
@@ -606,14 +676,16 @@ export async function loadFLPAttempts() {
 // ---- Contact items (admin-authored links: WhatsApp, phone, email, groups, etc.) ----
 // Requires a `contact_items` jsonb column on the `app_data` table (default value []).
 export async function loadContactItems() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("contact_items").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.contact_items) || [];
-  } catch (e) {
-    console.error("Load contact items failed (add a 'contact_items' jsonb column to app_data):", e);
-    return [];
-  }
+  return loadFromCdn("contactitems", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("contact_items").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.contact_items) || [];
+    } catch (e) {
+      console.error("Load contact items failed (add a 'contact_items' jsonb column to app_data):", e);
+      return [];
+    }
+  });
 }
 export async function saveContactItems(contact_items) {
   try {
@@ -623,6 +695,7 @@ export async function saveContactItems(contact_items) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, contact_items });
       if (insertError) throw insertError;
     }
+    await pushToCdn("contactitems", contact_items);
     return true;
   } catch (e) {
     console.error("Save contact items failed (add a 'contact_items' jsonb column to app_data):", e);
@@ -633,14 +706,16 @@ export async function saveContactItems(contact_items) {
 // ---- Social links (admin-authored URLs for the fixed WhatsApp Group / Instagram / Facebook / TikTok cards) ----
 // Requires a `social_links` jsonb column on the `app_data` table (default value {}).
 export async function loadSocialLinksMap() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("social_links").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.social_links) || {};
-  } catch (e) {
-    console.error("Load social links failed (add a 'social_links' jsonb column to app_data):", e);
-    return {};
-  }
+  return loadFromCdn("sociallinks", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("social_links").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.social_links) || {};
+    } catch (e) {
+      console.error("Load social links failed (add a 'social_links' jsonb column to app_data):", e);
+      return {};
+    }
+  });
 }
 export async function saveSocialLinksMap(social_links) {
   try {
@@ -650,6 +725,7 @@ export async function saveSocialLinksMap(social_links) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, social_links });
       if (insertError) throw insertError;
     }
+    await pushToCdn("sociallinks", social_links);
     return true;
   } catch (e) {
     console.error("Save social links failed (add a 'social_links' jsonb column to app_data):", e);
@@ -802,14 +878,16 @@ export async function loadLeaderboard(limit = 50, filter = null) {
 // ---- Exam countdown dates (admin-set, one date per program) ----
 // Requires an `exam_dates` jsonb column on the `app_data` table (default value {}).
 export async function loadExamDates() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("exam_dates").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return (data && data.exam_dates) || {};
-  } catch (e) {
-    console.error("Load exam dates failed (add an 'exam_dates' jsonb column to app_data):", e);
-    return {};
-  }
+  return loadFromCdn("examdates", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("exam_dates").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return (data && data.exam_dates) || {};
+    } catch (e) {
+      console.error("Load exam dates failed (add an 'exam_dates' jsonb column to app_data):", e);
+      return {};
+    }
+  });
 }
 export async function saveExamDates(examDates) {
   try {
@@ -819,6 +897,7 @@ export async function saveExamDates(examDates) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, exam_dates: examDates });
       if (insertError) throw insertError;
     }
+    await pushToCdn("examdates", examDates);
     return true;
   } catch (e) {
     console.error("Save exam dates failed (add an 'exam_dates' jsonb column to app_data):", e);
@@ -832,65 +911,53 @@ export async function saveExamDates(examDates) {
 // {"enabled": false, "time": "18:00", "message": ""}).
 const DEFAULT_DAILY_REMINDER = { enabled: false, time: "18:00", message: "Don't break your streak — today's questions are waiting!" };
 export async function loadDailyReminder() {
-  try {
-    const { data, error } = await supabase.from("app_data").select("daily_reminder").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return { ...DEFAULT_DAILY_REMINDER, ...((data && data.daily_reminder) || {}) };
-  } catch (e) {
-    console.error("Load daily reminder failed (add a 'daily_reminder' jsonb column to app_data):", e);
-    return DEFAULT_DAILY_REMINDER;
-  }
+  return loadFromCdn("dailyreminder", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("daily_reminder").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return { ...DEFAULT_DAILY_REMINDER, ...((data && data.daily_reminder) || {}) };
+    } catch (e) {
+      console.error("Load daily reminder failed (add a 'daily_reminder' jsonb column to app_data):", e);
+      return DEFAULT_DAILY_REMINDER;
+    }
+  });
 }
 
-// Combines what used to be 13 separate round trips (loadNotes, loadNotifications,
+// Combines the 13 separate small app_data resources (loadNotes, loadNotifications,
 // loadReviews, loadSyllabusItems, loadGuidelineItems, loadContactItems,
 // loadSocialLinksMap, loadExamDates, loadExplanationFeedback, loadQuestionReports,
-// loadDiscussions, loadDailyReminder, loadFLPTests — all reading different jsonb
-// columns off the very same `app_data` row) into ONE query. Even run in parallel,
-// 13 simultaneous requests over a mobile connection add real, noticeable delay to
-// every login — this was a meaningful chunk of "the app feels slow". The individual
-// load*() functions above are kept as-is and still used for their own on-demand
-// refreshes elsewhere; this combined loader is only for the initial app-open sequence.
+// loadDiscussions, loadDailyReminder, loadFLPTests) into one call for the initial
+// app-open sequence. Each of those is itself CDN-first now (see loadFromCdn), so
+// this fires 13 fast parallel requests at Cloudflare's edge rather than 13 (or
+// worse, 1 giant select("*") that also downloaded the entire multi-MB MCQ bank
+// for nothing — the bug this function used to have) round trips to Supabase. The
+// individual load*() functions above are kept as-is and still used for their own
+// on-demand refreshes elsewhere.
 export async function loadAppData() {
-  const empty = {
-    notes: [], notifications: [], reviews: [], syllabus: [], guidelines: [], contact_items: [],
-    social_links: {}, exam_dates: {}, explanation_feedback: {}, question_reports: [], discussions: {},
-    daily_reminder: DEFAULT_DAILY_REMINDER, flp_tests: [],
+  // IMPORTANT FIX: this used to do a single select("*") on the app_data row
+  // — which also includes the full MCQ `bank` column (10,000+ questions,
+  // several MB) — on every single app open, for every student, only to
+  // throw that part away below. That was almost certainly the single
+  // biggest source of Supabase egress in the whole app. Now it just asks
+  // for these 13 pieces specifically, each through the same CDN-first
+  // caching every other small resource uses (see loadFromCdn above) — so
+  // once each one has been saved at least once after this change, none of
+  // this touches Supabase at all on a normal app open. Return shape is
+  // unchanged, so nothing calling loadAppData() needs to know this changed.
+  const [
+    notes, notifications, reviews, syllabus, guidelines, contact_items,
+    social_links, exam_dates, explanation_feedback, question_reports,
+    discussions, daily_reminder, flp_tests,
+  ] = await Promise.all([
+    loadNotes(), loadNotifications(), loadReviews(), loadSyllabusItems(), loadGuidelineItems(), loadContactItems(),
+    loadSocialLinksMap(), loadExamDates(), loadExplanationFeedback(), loadQuestionReports(),
+    loadDiscussions(), loadDailyReminder(), loadFLPTests(),
+  ]);
+  return {
+    notes, notifications, reviews, syllabus, guidelines, contact_items,
+    social_links, exam_dates, explanation_feedback, question_reports,
+    discussions, daily_reminder: { ...DEFAULT_DAILY_REMINDER, ...(daily_reminder || {}) }, flp_tests,
   };
-  try {
-    // select("*") deliberately, not a named column list — naming columns meant
-    // ANY single missing/renamed column made the WHOLE query fail, silently
-    // wiping out everything else in this response (reviews, FLP tests, community
-    // links, etc. all "disappeared" together even though nothing was actually
-    // deleted server-side — this was a serious bug, now fixed). select("*")
-    // simply returns whatever columns exist; anything absent still falls back
-    // safely below via `|| []` / `|| {}`.
-    const { data, error } = await supabase
-      .from("app_data")
-      .select("*")
-      .eq("id", 1)
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) return empty;
-    return {
-      notes: data.notes || [],
-      notifications: data.notifications || [],
-      reviews: data.reviews || [],
-      syllabus: data.syllabus || [],
-      guidelines: data.guidelines || [],
-      contact_items: data.contact_items || [],
-      social_links: data.social_links || {},
-      exam_dates: data.exam_dates || {},
-      explanation_feedback: data.explanation_feedback || {},
-      question_reports: data.question_reports || [],
-      discussions: data.discussions || {},
-      daily_reminder: { ...DEFAULT_DAILY_REMINDER, ...(data.daily_reminder || {}) },
-      flp_tests: data.flp_tests || [],
-    };
-  } catch (e) {
-    console.error("Load app data failed:", e);
-    return empty;
-  }
 }
 
 // Generic safe read-modify-write for a single app_data jsonb column: always
@@ -934,6 +1001,7 @@ export async function saveDailyReminder(dailyReminder) {
       const { error: insertError } = await supabase.from("app_data").insert({ id: 1, daily_reminder: dailyReminder });
       if (insertError) throw insertError;
     }
+    await pushToCdn("dailyreminder", dailyReminder);
     return true;
   } catch (e) {
     console.error("Save daily reminder failed (add a 'daily_reminder' jsonb column to app_data):", e);
