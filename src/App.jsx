@@ -1908,10 +1908,23 @@ async function loadBank() {
   } catch (e) {
     console.error("CDN bank fetch failed, falling back to Supabase:", e);
   }
+  // Questions now live in their own `questions` table (one row each), not
+  // the old app_data.bank column — that column is frozen at whatever it
+  // held right before this migration and is no longer written to. Paginated
+  // because PostgREST caps a single request at 1000 rows by default and the
+  // bank is well past that.
   try {
-    const { data, error } = await supabase.from("app_data").select("bank").eq("id", 1).maybeSingle();
-    if (error) throw error;
-    return data && data.bank ? data.bank : null;
+    const pageSize = 1000;
+    let from = 0;
+    let all = [];
+    while (true) {
+      const { data, error } = await supabase.from("questions").select("*").range(from, from + pageSize - 1);
+      if (error) throw error;
+      all = all.concat(data || []);
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+    }
+    return all;
   } catch (e) {
     console.error("Load bank failed (network/Supabase error) — NOT treating this as an empty bank:", e);
     return false;
@@ -1998,6 +2011,43 @@ let lastKnownBankVersion = null;
 // a longer backoff between them (up to 8s), since on a genuinely slow/flaky
 // connection (a few hundred KB/s or less) a multi-MB payload needs more room
 // to eventually get through than 3 quick retries gave it.
+// Bumps app_data.bank_version by 1 — a tiny integer update, nothing to do
+// with the bank's actual content — so every student's app knows there's a
+// fresh bank to fetch next time it checks, exactly like saveBank() already
+// does. Used by the new per-row question writes below (add/edit/bulk-upload),
+// which never touch the bank's full content directly at all anymore.
+async function bumpBankVersion() {
+  try {
+    const { data } = await supabase.from("app_data").select("bank_version").eq("id", 1).maybeSingle();
+    const next = (data && typeof data.bank_version === "number" ? data.bank_version : 0) + 1;
+    await supabase.from("app_data").update({ bank_version: next }).eq("id", 1);
+    return next;
+  } catch (e) {
+    console.error("Bump bank_version failed:", e);
+    return null;
+  }
+}
+
+// Tells the Cloudflare Worker to pull the current question list straight
+// from Supabase itself (server-to-server) and refresh its cache — replaces
+// pushBankToCdn() for every add/edit/delete/bulk-upload now that questions
+// live in their own table: this is one small GET request regardless of how
+// large the bank is, instead of the admin's own device having to upload the
+// entire multi-MB bank on every single change (which is what made bulk PDF
+// saves time out on a slow connection).
+async function triggerBankRefresh() {
+  try {
+    const res = await fetch(`${CDN_BASE}/bank/refresh`);
+    if (res.ok) {
+      const data = await res.json();
+      return typeof data.version === "number" ? data.version : null;
+    }
+  } catch (e) {
+    console.error("Bank CDN refresh trigger failed:", e);
+  }
+  return null;
+}
+
 async function pushBankToCdn(bank, attempt = 1) {
   let lastError = null;
   try {
@@ -6755,7 +6805,27 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     setRecovering(true);
-    const ok = await saveBank(cacheRecovery.cached);
+    let ok = true;
+    try {
+      // Full replace, in chunks (Postgres/PostgREST is happier with a
+      // moderate batch size than one huge request) — this is a rare,
+      // explicitly-confirmed emergency tool, not a routine save, so a
+      // larger one-off transfer here is expected and fine.
+      const { error: deleteError } = await supabase.from("questions").delete().not("id", "is", null);
+      if (deleteError) throw deleteError;
+      const chunkSize = 500;
+      for (let i = 0; i < cacheRecovery.cached.length; i += chunkSize) {
+        const { error: insertError } = await supabase.from("questions").insert(cacheRecovery.cached.slice(i, i + chunkSize));
+        if (insertError) throw insertError;
+      }
+      await bumpBankVersion();
+      const cdnVersion = await triggerBankRefresh();
+      if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
+      lastKnownBankLength = cacheRecovery.cached.length;
+    } catch (e) {
+      console.error("Restore from cache failed:", e);
+      ok = false;
+    }
     setRecovering(false);
     if (ok !== true) {
       alert("Could not restore — check your internet connection and try again. Nothing was changed yet, so it's safe to retry.");
@@ -6992,15 +7062,22 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       const prevBank = bank;
       const nextBank = [...bank, ...toAdd];
       setBank(nextBank);
-      const ok = await saveBank(nextBank);
+      let ok = true;
+      try {
+        const { error } = await supabase.from("questions").insert(toAdd);
+        if (error) throw error;
+        await bumpBankVersion();
+        const cdnVersion = await triggerBankRefresh();
+        if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
+        lastKnownBankLength = nextBank.length;
+      } catch (e) {
+        console.error("FLP bulk save failed:", e);
+        ok = false;
+      }
       if (ok !== true) {
         setBank(prevBank);
         setFlpBulkSaving(false);
-        alert(
-          ok === "blocked"
-            ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
-            : "Could not save these questions — check your internet connection and try again."
-        );
+        alert("Could not save these questions — check your internet connection and try again.");
         return;
       }
       test = {
@@ -7280,36 +7357,33 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       return;
     }
     const prevBank = bank;
-    // Use the bank already held in memory instead of re-downloading the entire
-    // bank over the network first. saveBank() below already protects against
-    // another tab/device's changes via its own concurrency check (bank_version),
-    // so this extra download was purely redundant — it doubled the data
-    // transferred (download the full bank, then upload the full bank again)
-    // on every single save. On a slow mobile connection with a large, growing
-    // bank, that's what made the admin panel slow and made bulk PDF saves
-    // increasingly likely to time out (the 2nd/3rd PDF fails more often than
-    // the 1st, since the bank — and so the download+upload size — has already
-    // grown from the previous save).
+    // NEW: inserts only these new questions into the `questions` table (one
+    // request, payload = just this batch) instead of re-uploading the whole
+    // bank — this is exactly what was timing out on a slow connection as the
+    // bank grew (every save re-uploaded 10,000+ existing questions too).
     const next = [...bank, ...toAdd];
     setBulkSaving(true);
-    setBank(next);
-    const ok = await saveBank(next);
-    setBulkSaving(false);
-    if (ok !== true) {
+    setBank(next); // optimistic UI update
+    try {
+      const { error } = await supabase.from("questions").insert(toAdd);
+      if (error) throw error;
+      await bumpBankVersion();
+      const cdnVersion = await triggerBankRefresh();
+      if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
+      lastKnownBankLength = next.length;
+      setBulkResults([]);
+      setBulkSummary("");
+      setBulkStatus("idle");
+      setBulkFile(null);
+      alert(`${toAdd.length} question(s) added to the bank.`);
+      setTab("list");
+    } catch (e) {
+      console.error("Bulk save failed:", e);
       setBank(prevBank);
-      alert(
-        ok === "blocked"
-          ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
-          : "Could not save these questions — check your internet connection and try again."
-      );
-      return;
+      alert("Could not save these questions — check your internet connection and try again.");
+    } finally {
+      setBulkSaving(false);
     }
-    setBulkResults([]);
-    setBulkSummary("");
-    setBulkStatus("idle");
-    setBulkFile(null);
-    alert(`${toAdd.length} question(s) added to the bank.`);
-    setTab("list");
   };
 
   const filtered = bank.filter((q) => {
@@ -7336,7 +7410,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = (await pushBankToCdn(next)).version;
+      const cdnVersion = await triggerBankRefresh();
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
@@ -7360,13 +7434,13 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
   const syncToCdn = async () => {
     setCdnSyncing(true);
     try {
-      const { version: cdnVersion, error: cdnError } = await pushBankToCdn(bank);
+      const cdnVersion = await triggerBankRefresh();
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         lastKnownBankLength = bank.length;
         alert(`Synced ${bank.length} question(s) to the CDN.`);
       } else {
-        alert(`CDN sync failed: ${cdnError || "unknown error"}`);
+        alert("CDN sync failed — check your internet connection and try again.");
       }
     } finally {
       setCdnSyncing(false);
@@ -7389,7 +7463,7 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = (await pushBankToCdn(next)).version;
+      const cdnVersion = await triggerBankRefresh();
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
@@ -7422,32 +7496,29 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
       }
     }
     const prevBank = bank;
-    // Same reasoning as in saveBulkResults() above: use the bank already held
-    // in memory rather than re-downloading the whole thing first. saveBank()'s
-    // own bank_version check already guards against another tab/device having
-    // changed things in the meantime, so this avoids doubling the network
-    // transfer on every single question add/edit.
+    // NEW: writes only this one question directly to the `questions` table
+    // (one row, tiny payload) instead of re-uploading the entire bank array —
+    // this is what used to time out on a slow connection as the bank grew.
     const formToSave = form.subject === PAST_PAPERS_SUBJECT ? { ...form, topic: form.source } : form;
-    let next;
-    if (editingId) {
-      next = bank.map((q) => (q.id === editingId ? { ...formToSave, id: editingId } : q));
-    } else {
-      next = [...bank, { ...formToSave, id: uid() }];
-    }
+    const row = { ...formToSave, id: editingId || uid() };
+    const next = editingId ? bank.map((q) => (q.id === editingId ? row : q)) : [...bank, row];
     setSaving(true);
-    setBank(next);
-    const ok = await saveBank(next);
-    setSaving(false);
-    if (ok !== true) {
+    setBank(next); // optimistic UI update
+    try {
+      const { error } = await supabase.from("questions").upsert(row);
+      if (error) throw error;
+      await bumpBankVersion();
+      const cdnVersion = await triggerBankRefresh();
+      if (cdnVersion !== null) lastKnownBankVersion = cdnVersion;
+      lastKnownBankLength = next.length;
+      setTab("list");
+    } catch (e) {
+      console.error("Save question failed:", e);
       setBank(prevBank);
-      alert(
-        ok === "blocked"
-          ? "Save blocked: this looked like it would wipe most of the bank at once, so nothing was saved. Please reload and try again."
-          : "Could not save this question — check your internet connection and try again."
-      );
-      return;
+      alert("Could not save this question — check your internet connection and try again.");
+    } finally {
+      setSaving(false);
     }
-    setTab("list");
   };
 
   const changePass = async () => {
@@ -9786,7 +9857,7 @@ function AppInner() {
       if (error) throw error;
       lastKnownBankLength = next.length;
       const cacheSaved = await saveLocalBankCache(next);
-      const cdnVersion = (await pushBankToCdn(next)).version;
+      const cdnVersion = await triggerBankRefresh();
       if (cdnVersion !== null) {
         lastKnownBankVersion = cdnVersion;
         if (cacheSaved) saveLocalBankVersion(cdnVersion);
