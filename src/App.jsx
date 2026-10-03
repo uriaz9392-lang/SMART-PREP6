@@ -923,6 +923,40 @@ export async function loadDailyReminder() {
   });
 }
 
+// ---- Course access restriction (admin-togglable — e.g. "pause" MDCAT/KMU ----
+// CAT between exam cycles without removing anything or touching any data) ----
+// Requires an `access_restriction` jsonb column on app_data (default value
+// {"courses": [], "message": ""}). `courses` lists which PROGRAMS keys are
+// currently blocked; an empty list means nobody is restricted.
+const DEFAULT_ACCESS_RESTRICTION = { courses: [], message: "" };
+export async function loadAccessRestriction() {
+  return loadFromCdn("accessrestriction", async () => {
+    try {
+      const { data, error } = await supabase.from("app_data").select("access_restriction").eq("id", 1).maybeSingle();
+      if (error) throw error;
+      return { ...DEFAULT_ACCESS_RESTRICTION, ...((data && data.access_restriction) || {}) };
+    } catch (e) {
+      console.error("Load access restriction failed (add an 'access_restriction' jsonb column to app_data):", e);
+      return DEFAULT_ACCESS_RESTRICTION;
+    }
+  });
+}
+export async function saveAccessRestriction(restriction) {
+  try {
+    const { data, error } = await supabase.from("app_data").update({ access_restriction: restriction }).eq("id", 1).select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      const { error: insertError } = await supabase.from("app_data").insert({ id: 1, access_restriction: restriction });
+      if (insertError) throw insertError;
+    }
+    await pushToCdn("accessrestriction", restriction);
+    return true;
+  } catch (e) {
+    console.error("Save access restriction failed (add an 'access_restriction' jsonb column to app_data):", e);
+    return false;
+  }
+}
+
 // Combines the 13 separate small app_data resources (loadNotes, loadNotifications,
 // loadReviews, loadSyllabusItems, loadGuidelineItems, loadContactItems,
 // loadSocialLinksMap, loadExamDates, loadExplanationFeedback, loadQuestionReports,
@@ -6231,6 +6265,32 @@ function Results({ result, subject, onRetry, onHome, bookmarks, onToggleBookmark
 }
 
 // ---------- Student Auth (Sign up / Log in) ----------
+// Shown instead of the app to a student whose course is currently
+// restricted (see Admin Panel → Settings → Course Access Restriction) —
+// they're already signed out by the time this renders, so "OK" just takes
+// them back to the login screen rather than into the app.
+function RestrictedAccessScreen({ message, onDismiss }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-sm text-center">
+        <Lock size={28} className="mx-auto mb-4" style={{ color: T.inkSoft }} />
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-4">
+          Access Temporarily Paused
+        </h1>
+        <p className="text-sm mb-8 whitespace-pre-line" style={{ color: T.inkSoft }}>
+          {message && message.trim()
+            ? message
+            : "This app is temporarily paused for your course. Please check back later."}
+        </p>
+        <button onClick={onDismiss} className="px-6 py-3 text-sm" style={{ background: T.ink, color: T.paper }}>
+          OK
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
   const [name, setName] = useState("");
@@ -7134,6 +7194,33 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
     setExamDates(next);
     setExamDatesMsg("Saved.");
     setTimeout(() => setExamDatesMsg(""), 2000);
+  };
+
+  // ---- Course access restriction (pause a whole course without deleting anything) ----
+  const [accessRestriction, setAccessRestrictionState] = useState(DEFAULT_ACCESS_RESTRICTION);
+  const [accessRestrictionLoading, setAccessRestrictionLoading] = useState(true);
+  const [accessRestrictionMsg, setAccessRestrictionMsg] = useState("");
+  useEffect(() => {
+    (async () => {
+      setAccessRestrictionState(await loadAccessRestriction());
+      setAccessRestrictionLoading(false);
+    })();
+  }, []);
+  const flashAccessRestrictionMsg = (ok) => {
+    setAccessRestrictionMsg(ok ? "Saved." : "Could not save — check your internet connection.");
+    setTimeout(() => setAccessRestrictionMsg(""), 2000);
+  };
+  const toggleRestrictedCourse = async (courseKey) => {
+    const current = accessRestriction.courses || [];
+    const next = current.includes(courseKey) ? current.filter((c) => c !== courseKey) : [...current, courseKey];
+    const updated = { ...accessRestriction, courses: next };
+    setAccessRestrictionState(updated);
+    flashAccessRestrictionMsg(await saveAccessRestriction(updated));
+  };
+  const saveRestrictionMessage = async (msg) => {
+    const updated = { ...accessRestriction, message: msg };
+    setAccessRestrictionState(updated);
+    flashAccessRestrictionMsg(await saveAccessRestriction(updated));
   };
 
   // ---- Admin Dashboard: installs + daily usage ----
@@ -9032,6 +9119,53 @@ function AdminPanel({ bank, setBank, notesBank, setNotesBank, notifications, set
             />
             <button onClick={changePass} className="px-5 py-2 text-sm" style={{ background: T.ink, color: T.paper }}>Update passcode</button>
             {passMsg && <div className="text-sm mt-2" style={{ color: T.emerald }}>{passMsg}</div>}
+
+            <div className="mt-10 pt-8" style={{ borderTop: `1px solid ${T.line}` }}>
+              <div className="flex items-center gap-2 mb-2">
+                <Lock size={18} />
+                <h2 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }} className="text-xl">Course Access Restriction</h2>
+              </div>
+              <p className="text-sm mb-5" style={{ color: T.inkSoft }}>
+                Pause a course for its students — they're signed out immediately and shown the
+                message below instead of the app. Turn it back off any time (e.g. when the next
+                exam cycle starts) — nothing about their accounts, stats, or data is touched.
+              </p>
+              {accessRestrictionLoading ? (
+                <div className="text-sm" style={{ color: T.inkSoft }}>Loading…</div>
+              ) : (
+                <>
+                  <div className="space-y-2 mb-5">
+                    {PROGRAMS.map((p) => {
+                      const restricted = (accessRestriction.courses || []).includes(p.key);
+                      return (
+                        <label
+                          key={p.key}
+                          className="flex items-center gap-3 p-3 cursor-pointer"
+                          style={{ background: T.card, border: `1px solid ${restricted ? T.amber : T.line}` }}
+                        >
+                          <input type="checkbox" checked={restricted} onChange={() => toggleRestrictedCourse(p.key)} />
+                          <span style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 600 }}>{p.label}</span>
+                          {restricted && <span className="text-xs" style={{ color: T.amber }}>— restricted right now</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <label className="text-xs tracking-widest uppercase block mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.inkSoft }}>
+                    Message shown to restricted students
+                  </label>
+                  <textarea
+                    value={accessRestriction.message}
+                    onChange={(e) => setAccessRestrictionState({ ...accessRestriction, message: e.target.value })}
+                    onBlur={(e) => saveRestrictionMessage(e.target.value)}
+                    rows={3}
+                    placeholder="This app is temporarily paused for your course. Please check back later."
+                    className="w-full px-3 py-2 text-sm"
+                    style={{ border: `1px solid ${T.line}`, background: T.card, color: T.ink }}
+                  />
+                  {accessRestrictionMsg && <div className="text-sm mt-2" style={{ color: T.emerald }}>{accessRestrictionMsg}</div>}
+                </>
+              )}
+            </div>
           </div>
         )}
       </main>
@@ -9158,6 +9292,17 @@ function AppInner() {
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
+
+  // ---- Course access restriction (admin can "pause" a whole course, e.g. ----
+  // MDCAT/KMU CAT between exam cycles, without deleting or changing anything
+  // else) — see Admin Panel → Settings. Starts as "nobody restricted" so
+  // nobody is ever wrongly blocked during the brief moment before this
+  // finishes loading.
+  const [accessRestriction, setAccessRestriction] = useState(DEFAULT_ACCESS_RESTRICTION);
+  const [restrictedBlock, setRestrictedBlock] = useState(false);
+  useEffect(() => {
+    loadAccessRestriction().then(setAccessRestriction);
+  }, []);
 
   // ---- Dark / Light theme ----
   // Reads the saved choice once on first mount; defaults to dark (the app's
@@ -9399,6 +9544,17 @@ function AppInner() {
   // Block names that belong to the student's MBBS year (e.g. ["Block A","Block B","Block C"]).
   // Empty when not an MBBS student or no year is set, meaning "no restriction".
   const userMbbsBlocks = userMbbsYear ? Object.keys(MBBS_STRUCTURE[userMbbsYear] || {}) : [];
+
+  // A restricted course's students are signed back out immediately, whether
+  // they were already logged in from before the restriction was turned on,
+  // or just signed in right now — isAdminURL already makes userCourse null
+  // for the admin, so this never locks the admin out of their own panel.
+  useEffect(() => {
+    if (user && userCourse && (accessRestriction.courses || []).includes(userCourse)) {
+      setRestrictedBlock(true);
+      signOut().then(() => setUser(null));
+    }
+  }, [user, userCourse, accessRestriction]);
 
   const openProgram = (p) => {
     if (userCourse && p !== userCourse) return; // defensive: students can't jump into another course
@@ -10215,6 +10371,10 @@ function AppInner() {
         }}
       />
     );
+  }
+
+  if (restrictedBlock) {
+    return <RestrictedAccessScreen message={accessRestriction.message} onDismiss={() => setRestrictedBlock(false)} />;
   }
 
   if (!user) {
