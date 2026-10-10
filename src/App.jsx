@@ -2439,9 +2439,10 @@ function useBackResolver(getAction) {
 
 // Shuffles a question's option order (A/B/C/D) so the correct answer isn't always
 // in the same position on repeat attempts — remaps `correct` to match the new order.
+// NOTE: option shuffling is switched OFF — options always stay in the exact
+// original order (and `correct` index) as uploaded, so they match the explanation.
 function shuffleQuestionOptions(q) {
-  const order = shuffleArray(q.options.map((_, i) => i));
-  return { ...q, options: order.map((i) => q.options[i]), correct: order.indexOf(q.correct) };
+  return q;
 }
 
 // ---------- WhatsApp brand icon ----------
@@ -3360,6 +3361,48 @@ function NotificationsOverlay({ notifications, onClose }) {
 }
 
 // ---------- Leaderboard ----------
+function SavedTopicsView({ questions, onBack, onOpen }) {
+  // Groups saved questions by subject + topic so e.g. Renal Physiology and
+  // GIT Physiology mistakes are never mixed together.
+  const groups = {};
+  questions.forEach((q) => {
+    const subj = q.subject || "Other";
+    const top = q.topic || "";
+    const key = `${q.program || ""}|${subj}|${top}`;
+    if (!groups[key]) groups[key] = { label: top ? `${subj} — ${top}` : subj, program: q.program || "", qs: [] };
+    groups[key].qs.push(q);
+  });
+  const list = Object.values(groups).sort((a, b) => a.label.localeCompare(b.label));
+  return (
+    <div className="min-h-screen pb-20" style={{ background: T.paper, color: T.ink }}>
+      <FontLoader />
+      <div className="max-w-2xl mx-auto px-6 py-10">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6" style={{ color: T.inkSoft }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <h1 style={{ fontFamily: "'Source Serif 4', serif", fontWeight: 700 }} className="text-2xl mb-1">Saved Questions</h1>
+        <p className="text-sm mb-6" style={{ color: T.inkSoft }}>Grouped topic-wise. Tap a topic to practice its saved questions.</p>
+        <div className="space-y-3">
+          {list.map((g) => (
+            <button
+              key={g.program + g.label}
+              onClick={() => onOpen(g.qs, g.label)}
+              className="w-full text-left p-4 rounded-xl flex items-center justify-between"
+              style={{ background: T.card, border: `1px solid ${T.line}` }}
+            >
+              <div>
+                <div className="font-semibold">{g.label}</div>
+                {g.program && <div className="text-xs mt-0.5" style={{ color: T.inkSoft }}>{g.program}</div>}
+              </div>
+              <span className="text-sm px-2 py-1 rounded-full" style={{ background: T.paper, color: T.inkSoft }}>{g.qs.length}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LeaderboardView({ onBack, currentUserName, userCourse, userMbbsYear }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9643,7 +9686,8 @@ function AppInner() {
       setView(
         quizMeta.mode === "normal" ? "subject" :
         quizMeta.mode === "pastpaper" ? "pastpaper-setup" :
-        quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" : "home"
+        quizMeta.mode === "mbbs-flp" ? "mbbs-flp-setup" :
+        quizMeta.mode === "saved" ? "saved" : "home"
       );
       return;
     }
@@ -9800,7 +9844,11 @@ function AppInner() {
       ...(stats?.slowIds || []),
     ]);
     const qs = bank.filter((q) => ids.has(q.id));
-    startSpecialQuiz(qs, "Saved Questions", "saved", "Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
+    if (!qs.length) {
+      alert("Nothing saved yet. Questions you bookmark, get wrong, or spend over a minute on will show up here automatically.");
+      return;
+    }
+    setView("saved");
   };
 
   const openFLP = (test, attemptName, attemptPhone) => {
@@ -10440,6 +10488,16 @@ function AppInner() {
         onClearFLPShareNav={() => setFlpShareNav(null)}
         userMbbsYear={userMbbsYear}
         onOpenMbbsFlp={openMbbsFlp}
+      />
+    );
+  }
+  if (view === "saved") {
+    const savedIds = new Set([...(stats?.bookmarks || []), ...(stats?.wrongIds || []), ...(stats?.slowIds || [])]);
+    return (
+      <SavedTopicsView
+        questions={bank.filter((q) => savedIds.has(q.id))}
+        onBack={goBack}
+        onOpen={(qs, label) => startSpecialQuiz(qs, label, "saved", "Nothing saved here yet.")}
       />
     );
   }
