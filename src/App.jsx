@@ -1003,29 +1003,87 @@ export async function loadAppData() {
 // the admin added or removed one item. `mutate(current)` returns the new
 // value to save. Returns the new value on success, or null on failure
 // (nothing saved, so the caller can alert instead of assuming success).
-async function mergeAppDataField(column, emptyValue, mutate) {
-  try {
-    const { data, error } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
-    if (error) throw error;
-    const current = (data && data[column]) || emptyValue;
-    const next = mutate(current);
-    const { error: updateError } = await supabase.from("app_data").update({ [column]: next }).eq("id", 1);
-    if (updateError) throw updateError;
-    // Verify the write actually landed by reading it straight back, instead
-    // of trusting a successful-looking response — a write that "succeeds"
-    // but silently doesn't stick (e.g. an RLS policy quietly rejecting it)
-    // is exactly what made saves look fine once, then disappear.
-    const { data: verify, error: verifyError } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
-    if (verifyError) throw verifyError;
-    const persisted = (verify && verify[column]) || emptyValue;
-    if (JSON.stringify(persisted) !== JSON.stringify(next)) {
-      throw new Error(`Update reported success but did not persist — check Row Level Security policies allow UPDATE on app_data.${column} for this user.`);
-    }
-    return next;
-  } catch (e) {
-    console.error(`Safe update of app_data.${column} failed:`, e);
-    return null;
+const MERGE_CDN_NAMES = {
+  exam_dates: "examdates", reviews: "reviews", explanation_feedback: "explanationfeedback",
+  question_reports: "questionreports", discussions: "discussions", syllabus: "syllabus",
+  guidelines: "guidelines", contact_items: "contactitems", social_links: "sociallinks",
+};
+// Removes accidental duplicate entries (same id) — protects against a retry
+// after a flaky connection where the first attempt had actually gone through.
+function dedupeById(value) {
+  const dedupeArr = (arr) => {
+    const seen = new Set();
+    return arr.filter((x) => {
+      if (x && typeof x === "object" && x.id !== undefined) {
+        if (seen.has(x.id)) return false;
+        seen.add(x.id);
+      }
+      return true;
+    });
+  };
+  if (Array.isArray(value)) return dedupeArr(value);
+  if (value && typeof value === "object") {
+    const out = {};
+    Object.keys(value).forEach((k) => (out[k] = Array.isArray(value[k]) ? dedupeArr(value[k]) : value[k]));
+    return out;
   }
+  return value;
+}
+// True when `persisted` (what's saved now) still contains everything we just
+// wrote (`next`) and none of what we removed (items in `current` not in `next`)
+// — so another student saving at the same moment doesn't count as a failure.
+function writeStuck(next, persisted, current) {
+  if (JSON.stringify(next) === JSON.stringify(persisted)) return true;
+  const key = (x) => JSON.stringify(x);
+  if (Array.isArray(next) && Array.isArray(persisted)) {
+    const pset = new Set(persisted.map(key));
+    const nset = new Set(next.map(key));
+    if (!next.every((x) => pset.has(key(x)))) return false;
+    return (Array.isArray(current) ? current : []).every((x) => nset.has(key(x)) || !pset.has(key(x)));
+  }
+  if (next && persisted && typeof next === "object" && typeof persisted === "object" && !Array.isArray(next) && !Array.isArray(persisted)) {
+    const cur = current && typeof current === "object" && !Array.isArray(current) ? current : {};
+    for (const k of Object.keys(next)) {
+      if (!writeStuck(next[k], persisted[k], cur[k])) return false;
+    }
+    for (const k of Object.keys(cur)) {
+      if (!(k in next) && k in persisted) return false;
+    }
+    return true;
+  }
+  return false;
+}
+async function mergeAppDataField(column, emptyValue, mutate) {
+  // Up to 3 attempts: a single hiccup (slow mobile network, or another student
+  // saving at the very same moment) used to show "check your internet
+  // connection" even though nothing was wrong — now it quietly retries first.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const { data, error } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
+      if (error) throw error;
+      const current = (data && data[column]) || emptyValue;
+      const next = dedupeById(mutate(current));
+      const { error: updateError } = await supabase.from("app_data").update({ [column]: next }).eq("id", 1);
+      if (updateError) throw updateError;
+      // Verify the write actually landed by reading it straight back, instead
+      // of trusting a successful-looking response — a write that "succeeds"
+      // but silently doesn't stick (e.g. an RLS policy quietly rejecting it)
+      // is exactly what made saves look fine once, then disappear.
+      const { data: verify, error: verifyError } = await supabase.from("app_data").select(column).eq("id", 1).maybeSingle();
+      if (verifyError) throw verifyError;
+      const persisted = (verify && verify[column]) || emptyValue;
+      if (!writeStuck(next, persisted, current)) {
+        throw new Error(`Update reported success but did not persist — check Row Level Security policies allow UPDATE on app_data.${column} for this user.`);
+      }
+      const cdnName = MERGE_CDN_NAMES[column];
+      if (cdnName) pushToCdn(cdnName, persisted); // best-effort, never blocks or fails the save
+      return next;
+    } catch (e) {
+      console.error(`Safe update of app_data.${column} failed (attempt ${attempt}):`, e);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 600 * attempt));
+    }
+  }
+  return null;
 }
 export async function saveDailyReminder(dailyReminder) {
   try {
@@ -5299,8 +5357,16 @@ function PastPaperSubfoldersPage({ program, parent, bank, onBack, onOpenFolder, 
 
 // Quiz setup for a single past-paper folder — no subject/topic step, since a real
 // past paper already mixes subjects the way the actual exam does.
-function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmin, onDeleteMcqs }) {
+function PastPaperSetup({ program, folder, bank, seenIds, onBack, onStart, onHome, isAdmin, onDeleteMcqs }) {
   const folderQuestions = bank.filter((q) => q.program === program && q.source === folder);
+  // Unattempted questions come first (in the paper's own order); only once every
+  // question has been attempted does it fall back to the already-attempted ones.
+  const seenSet = useMemo(() => new Set(seenIds || []), [seenIds]);
+  const orderedQuestions = useMemo(
+    () => [...folderQuestions.filter((q) => !seenSet.has(q.id)), ...folderQuestions.filter((q) => seenSet.has(q.id))],
+    [folderQuestions, seenSet]
+  );
+  const newCount = folderQuestions.filter((q) => !seenSet.has(q.id)).length;
   const [count, setCount] = useState(10);
   const [timed, setTimed] = useState(false);
   const maxCount = folderQuestions.length;
@@ -5352,6 +5418,11 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
               <div style={{ fontFamily: "'IBM Plex Mono', monospace" }} className="text-lg mt-1">
                 {chosenCount} questions
               </div>
+              {newCount < maxCount && (
+                <div className="text-xs mt-1" style={{ color: T.inkSoft }}>
+                  {newCount > 0 ? `${newCount} not attempted yet — these come first.` : "You've attempted every question here — starting again from the beginning."}
+                </div>
+              )}
             </div>
 
             <div className="mb-8">
@@ -5364,7 +5435,7 @@ function PastPaperSetup({ program, folder, bank, onBack, onStart, onHome, isAdmi
             </div>
 
             <button
-              onClick={() => onStart(folderQuestions.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
+              onClick={() => onStart(orderedQuestions.slice(0, chosenCount), { timeLimit: timed ? chosenCount * SECONDS_PER_Q : null })}
               className="px-6 py-3 text-sm tracking-wide"
               style={{ background: T.ink, color: T.paper, fontFamily: "'IBM Plex Mono', monospace" }}
             >
@@ -6334,6 +6405,18 @@ function RestrictedAccessScreen({ message, onDismiss }) {
   );
 }
 
+// Students must never see backend billing/quota details (e.g. "exceed_egress_quota").
+// They only get a simple "temporarily restricted" message; the admin (opening the
+// app with ?admin in the link) still sees the real technical error.
+function friendlyAuthError(message) {
+  const msg = String(message || "");
+  const isAdminView = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("admin");
+  if (!isAdminView && /restricted|egress|quota|violation|spend cap|upgrade their plan/i.test(msg)) {
+    return "The app is temporarily restricted. Please try again later.";
+  }
+  return msg;
+}
+
 function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
   const [name, setName] = useState("");
@@ -6365,7 +6448,7 @@ function AuthScreen({ onAuthed }) {
       const { error: err } = await sendPasswordReset(email.trim());
       setBusy(false);
       if (err) {
-        setError(err.message);
+        setError(friendlyAuthError(err.message));
         return;
       }
       setNotice("If an account exists for that email, a reset link has been sent. Check your inbox (and spam folder), then follow the link to set a new password.");
@@ -6397,7 +6480,7 @@ function AuthScreen({ onAuthed }) {
       const { data, error: err } = await signUp(email.trim(), password, { name: name.trim(), course, mbbsYear: course === "MBBS" ? mbbsYear : "" });
       setBusy(false);
       if (err) {
-        setError(err.message);
+        setError(friendlyAuthError(err.message));
         return;
       }
       if (data.session) {
@@ -6410,7 +6493,7 @@ function AuthScreen({ onAuthed }) {
       const { data, error: err } = await signIn(email.trim(), password);
       setBusy(false);
       if (err) {
-        setError(err.message);
+        setError(friendlyAuthError(err.message));
         return;
       }
       onAuthed(data.session);
@@ -6671,7 +6754,7 @@ function ResetPasswordScreen({ onDone, onSignOutAndCancel }) {
     const { error: err } = await updatePassword(password);
     setBusy(false);
     if (err) {
-      setError(err.message);
+      setError(friendlyAuthError(err.message));
       return;
     }
     onDone();
@@ -9903,9 +9986,10 @@ function AppInner() {
   // ---- Reviews: any signed-in student can add one; visible to students of
   // the same course, and to admin (across all courses, for moderation) ----
   const addReview = async (review) => {
+    const newReviewId = uid(); // created once, so a retry can never double-post
     const next = await mergeAppDataField("reviews", [], (current) => [
       ...current,
-      { ...review, id: uid(), programs: userCourse ? [userCourse] : [], createdAt: new Date().toISOString(), likes: [], adminReply: null },
+      { ...review, id: newReviewId, programs: userCourse ? [userCourse] : [], createdAt: new Date().toISOString(), likes: [], adminReply: null },
     ]);
     if (next === null) {
       alert("Could not save your review — check your internet connection and try again.");
@@ -10325,10 +10409,11 @@ function AppInner() {
           slowSet.delete(qq.id);
         }
 
-        // Only regular topic practice avoids repeats — a fixed Past Paper or
-        // FLP is meant to be the same complete paper every time, not a
-        // rotating pool, so those never mark questions as "seen" here.
+        // Regular topic practice marks every question in the session as seen.
+        // A Past Paper marks only the questions the student actually answered,
+        // so unattempted ones come first next time. FLP never marks anything.
         if (quizMeta.mode === "normal") seenSet.add(qq.id);
+        else if (quizMeta.mode === "pastpaper" && res.answers[i] !== undefined) seenSet.add(qq.id);
       });
 
       let streak = current.streak || 0;
@@ -10688,6 +10773,7 @@ function AppInner() {
         program={program}
         folder={pastPaperFolder}
         bank={bank}
+        seenIds={stats?.seenIds || []}
         onBack={goBack}
         onStart={startPastPaperQuiz}
         onHome={() => setView("home")}
