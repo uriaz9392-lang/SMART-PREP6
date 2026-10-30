@@ -2497,10 +2497,14 @@ function useBackResolver(getAction) {
 
 // Shuffles a question's option order (A/B/C/D) so the correct answer isn't always
 // in the same position on repeat attempts — remaps `correct` to match the new order.
-// NOTE: option shuffling is switched OFF — options always stay in the exact
-// original order (and `correct` index) as uploaded, so they match the explanation.
+// Options are shuffled everywhere (practice, daily, weak, saved, FLP...) EXCEPT
+// for Past Paper questions, which always keep the original option order exactly
+// as uploaded. `correct` is remapped to match whenever a shuffle happens.
 function shuffleQuestionOptions(q) {
-  return q;
+  if (!Array.isArray(q.options) || q.options.length < 2) return q;
+  if (isPastPaperSource(q.program, q.source)) return q;
+  const order = shuffleArray(q.options.map((_, i) => i));
+  return { ...q, options: order.map((i) => q.options[i]), correct: order.indexOf(q.correct) };
 }
 
 // ---------- WhatsApp brand icon ----------
